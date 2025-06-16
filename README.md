@@ -1,8 +1,4 @@
-# PyNebula 项目
-
-这是一个基于 MuJoCo 和 JAX 的机器人仿真与控制项目。本文档主要介绍其中包含的`Mujoco 模型查看器`工具。
-
-## Mujoco 模型查看器
+# Mujoco 模型查看器
 
 `Mujoco 模型查看器`是一个基于 PyQt5 开发的图形化工具，用于可视化、调试和交互式地操作 MuJoCo 模型。
 
@@ -29,9 +25,9 @@
     ```
 
 2.  **启动程序**:
-    在项目根目录下运行以下命令：
+    运行以下命令：
     ```bash
-    python pynebula/pinosadi/utils/mujoco_viewer.py
+    python mujoco_viewer.py
     ```
 
 ### 使用说明
