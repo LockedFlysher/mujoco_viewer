@@ -19,8 +19,12 @@
 ### 如何运行
 
 1.  **安装依赖**:
-    请确保已安装以下Python库：
+    请确保已安装以下库：
     ```bash
+
+    sudo apt-get update && sudo apt-get install -y libxcb-xinerama0 libxcb-icccm4 libxcb-
+    image0 libxcb-keysyms1 libxcb-render-util0 libxcb-xkb1 libxkbcommon-x11-0
+    
     pip install mujoco pyqt5 numpy
     ```
 
