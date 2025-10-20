@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QGridLayout, QPushButton, QLabel,
                              QSlider, QLineEdit, QFileDialog, QScrollArea,
                              QGroupBox, QSplitter, QMessageBox, QSpinBox,
-                             QDoubleSpinBox, QFrame)
+                             QDoubleSpinBox, QFrame, QCheckBox, QComboBox)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont, QPalette, QColor, QImage, QPainter
 import mujoco
@@ -15,8 +15,8 @@ import time
 
 
 def euler_to_quaternion(rpy):
-    """将欧拉角序列转换为四元数。"""
-    # 假设 rpy 是弧度单位，顺序为 'xyz' (roll, pitch, yaw)
+    """Convert Euler angle sequence to quaternion."""
+    # Assuming rpy is in radians, order is 'xyz' (roll, pitch, yaw)
     roll, pitch, yaw = rpy[0], rpy[1], rpy[2]
 
     cy = np.cos(yaw * 0.5)
@@ -26,7 +26,7 @@ def euler_to_quaternion(rpy):
     cr = np.cos(roll * 0.5)
     sr = np.sin(roll * 0.5)
 
-    # MuJoCo 四元数顺序为 (w, x, y, z)
+    # MuJoCo quaternion order is (w, x, y, z)
     w = cr * cp * cy + sr * sp * sy
     x = sr * cp * cy - cr * sp * sy
     y = cr * sp * cy + sr * cp * sy
@@ -35,23 +35,23 @@ def euler_to_quaternion(rpy):
     return np.array([w, x, y, z])
 
 def quaternion_to_euler(quat):
-    """将四元数转换为欧拉角序列。"""
-    # 假设 quat 顺序为 (w, x, y, z)
+    """Convert quaternion to Euler angle sequence."""
+    # Assuming quat order is (w, x, y, z)
     w, x, y, z = quat[0], quat[1], quat[2], quat[3]
 
-    # 横滚 (x-axis rotation)
+    # Roll (x-axis rotation)
     sinr_cosp = 2 * (w * x + y * z)
     cosr_cosp = 1 - 2 * (x * x + y * y)
     roll = np.arctan2(sinr_cosp, cosr_cosp)
 
-    # 俯仰 (y-axis rotation)
+    # Pitch (y-axis rotation)
     sinp = 2 * (w * y - z * x)
     if np.abs(sinp) >= 1:
-        pitch = np.copysign(np.pi / 2, sinp)  # 如果超出范围，则使用90度
+        pitch = np.copysign(np.pi / 2, sinp)  # If out of range, use 90 degrees
     else:
         pitch = np.arcsin(sinp)
 
-    # 偏航 (z-axis rotation)
+    # Yaw (z-axis rotation)
     siny_cosp = 2 * (w * z + x * y)
     cosy_cosp = 1 - 2 * (y * y + z * z)
     yaw = np.arctan2(siny_cosp, cosy_cosp)
@@ -105,7 +105,7 @@ class MujocoWidget(QWidget):
             painter = QPainter(self)
             painter.setPen(Qt.white)
             painter.fillRect(self.rect(), Qt.black)
-            painter.drawText(self.rect(), Qt.AlignCenter, "在此处加载模型以开始")
+            painter.drawText(self.rect(), Qt.AlignCenter, "Load a model here to begin")
 
 
     def wheelEvent(self, event):
@@ -156,7 +156,7 @@ class MujocoWidget(QWidget):
 
 
 class BaseControlWidget(QWidget):
-    """基座控制组件 (XYZ + RPY)"""
+    """Base control widget (XYZ + RPY)"""
     valueChanged = pyqtSignal()
 
     def __init__(self):
@@ -231,7 +231,7 @@ class BaseControlWidget(QWidget):
 
 
 class JointControlWidget(QWidget):
-    """单个关节控制组件"""
+    """Single joint control widget"""
     valueChanged = pyqtSignal(int, float)  # joint_id, value
 
     def __init__(self, joint_id, joint_name, joint_range, joint_type):
@@ -247,13 +247,13 @@ class JointControlWidget(QWidget):
         layout = QHBoxLayout()
         layout.setContentsMargins(5, 2, 5, 2)
 
-        # 关节名称标签
+        # Joint name label
         name_label = QLabel(f"{self.joint_name}")
         name_label.setMinimumWidth(120)
         name_label.setMaximumWidth(120)
         layout.addWidget(name_label)
 
-        # 数值输入框
+        # Value input box
         self.value_spinbox = QDoubleSpinBox()
         self.value_spinbox.setRange(self.joint_range[0], self.joint_range[1])
         self.value_spinbox.setSingleStep(0.01)
@@ -264,14 +264,14 @@ class JointControlWidget(QWidget):
         self.value_spinbox.valueChanged.connect(self.on_spinbox_changed)
         layout.addWidget(self.value_spinbox)
 
-        # 滑动条
+        # Slider
         self.slider = QSlider(Qt.Horizontal)
         self.slider.setRange(int(self.joint_range[0] * 1000), int(self.joint_range[1] * 1000))
         self.slider.setValue(0)
         self.slider.valueChanged.connect(self.on_slider_changed)
         layout.addWidget(self.slider)
 
-        # 范围标签
+        # Range label
         range_label = QLabel(f"[{self.joint_range[0]:.2f}, {self.joint_range[1]:.2f}]")
         range_label.setMinimumWidth(100)
         range_label.setMaximumWidth(100)
@@ -312,52 +312,69 @@ class MujocoViewer(QMainWindow):
         self.viewer_thread = None
         self.joint_controls = []
         self.is_viewer_running = False
+        self.is_simulation_running = False
         self.free_joint_id = -1
         self.free_joint_qpos_addr = -1
         self.config_file_path = os.path.join(os.path.expanduser('~'), '.mujoco_viewer_last_path.txt')
+        
+        # Store names in the model
+        self.body_names = []
+        self.joint_names = []
+        self.geom_names = []
+        
+        # Store original colors for highlighting
+        self.original_geom_colors = {}
+        self.highlighted_objects = {'source': None, 'target': None}
+
+        # 🔧 线程安全的joint更新队列
+        self._pending_joint_updates = {}
+        self._pending_base_update = None
+        self._update_lock = threading.Lock()
+
+
 
         self.setupUI()
         self._load_last_path()
-        self.setWindowTitle("Mujoco模型查看器")
+        self.setWindowTitle("MuJoCo Model Viewer")
         self.resize(1200, 800)
 
     def setupUI(self):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
-        # 主布局
+        # Main layout
         main_layout = QHBoxLayout()
         central_widget.setLayout(main_layout)
 
-        # 创建分割器
+        # Create splitter
         splitter = QSplitter(Qt.Horizontal)
         main_layout.addWidget(splitter)
 
-        # 左侧控制面板
+        # Left control panel
         self.setupControlPanel(splitter)
 
-        # 右侧信息面板
+        # Right info panel
         self.setupInfoPanel(splitter)
 
-        # 设置分割器比例
+        # Set splitter proportions
         splitter.setSizes([800, 400])
 
     def setupControlPanel(self, parent):
-        """设置左侧控制面板"""
+        """Setup left control panel"""
         control_widget = QWidget()
         control_layout = QVBoxLayout()
         control_widget.setLayout(control_layout)
 
-        # 文件加载区域
-        file_group = QGroupBox("模型文件")
+        # File loading area
+        file_group = QGroupBox("Model File")
         file_layout = QVBoxLayout()
 
         file_input_layout = QHBoxLayout()
         self.file_path_edit = QLineEdit()
-        self.file_path_edit.setPlaceholderText("选择XML文件路径...")
-        browse_btn = QPushButton("浏览")
+        self.file_path_edit.setPlaceholderText("Select XML file path...")
+        browse_btn = QPushButton("Browse")
         browse_btn.clicked.connect(self.browse_file)
-        load_btn = QPushButton("加载模型")
+        load_btn = QPushButton("Load Model")
         load_btn.clicked.connect(self.load_model)
         load_btn.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; }")
 
@@ -369,42 +386,61 @@ class MujocoViewer(QMainWindow):
         file_group.setLayout(file_layout)
         control_layout.addWidget(file_group)
 
-        # 基座控制
-        self.base_control_group = QGroupBox("基座控制 (XYZ + RPY)")
+        # Base control
+        self.base_control_group = QGroupBox("Base Control (XYZ + RPY)")
         self.base_control_widget = BaseControlWidget()
         self.base_control_widget.valueChanged.connect(self.on_base_control_changed)
         base_group_layout = QVBoxLayout()
         base_group_layout.addWidget(self.base_control_widget)
         self.base_control_group.setLayout(base_group_layout)
         control_layout.addWidget(self.base_control_group)
-        self.base_control_group.setVisible(False) # 初始隐藏
+        self.base_control_group.setVisible(False) # Initially hidden
 
-
-        # 查看器控制
-        viewer_group = QGroupBox("查看器控制")
-        viewer_layout = QHBoxLayout()
-
-        self.start_viewer_btn = QPushButton("启动查看器")
+        # Viewer control
+        viewer_group = QGroupBox("Viewer Control")
+        viewer_layout = QVBoxLayout()
+        
+        # First row: viewer buttons
+        viewer_row1 = QHBoxLayout()
+        self.start_viewer_btn = QPushButton("Start Viewer")
         self.start_viewer_btn.clicked.connect(self.start_viewer)
         self.start_viewer_btn.setEnabled(False)
 
-        self.stop_viewer_btn = QPushButton("停止查看器")
+        self.stop_viewer_btn = QPushButton("Stop Viewer")
         self.stop_viewer_btn.clicked.connect(self.stop_viewer)
         self.stop_viewer_btn.setEnabled(False)
 
-        self.reset_btn = QPushButton("重置姿态")
+        self.reset_btn = QPushButton("Reset Pose")
         self.reset_btn.clicked.connect(self.reset_pose)
         self.reset_btn.setEnabled(False)
 
-        viewer_layout.addWidget(self.start_viewer_btn)
-        viewer_layout.addWidget(self.stop_viewer_btn)
-        viewer_layout.addWidget(self.reset_btn)
+        viewer_row1.addWidget(self.start_viewer_btn)
+        viewer_row1.addWidget(self.stop_viewer_btn)
+        viewer_row1.addWidget(self.reset_btn)
+        
+        # Second row: simulation control buttons
+        sim_row = QHBoxLayout()
+        self.start_sim_btn = QPushButton("Start Simulation (Fixed Joints)")
+        self.start_sim_btn.clicked.connect(self.start_simulation)
+        self.start_sim_btn.setEnabled(False)
+        self.start_sim_btn.setStyleSheet("QPushButton { background-color: #2196F3; color: white; font-weight: bold; }")
+
+        self.stop_sim_btn = QPushButton("Stop Simulation")
+        self.stop_sim_btn.clicked.connect(self.stop_simulation)
+        self.stop_sim_btn.setEnabled(False)
+        self.stop_sim_btn.setStyleSheet("QPushButton { background-color: #f44336; color: white; font-weight: bold; }")
+
+        sim_row.addWidget(self.start_sim_btn)
+        sim_row.addWidget(self.stop_sim_btn)
+        
+        viewer_layout.addLayout(viewer_row1)
+        viewer_layout.addLayout(sim_row)
 
         viewer_group.setLayout(viewer_layout)
         control_layout.addWidget(viewer_group)
 
-        # 关节控制区域
-        self.joint_group = QGroupBox("关节控制")
+        # Joint control area
+        self.joint_group = QGroupBox("Joint Control")
         self.joint_scroll = QScrollArea()
         self.joint_scroll.setWidgetResizable(True)
         self.joint_scroll.setMinimumHeight(400)
@@ -423,16 +459,16 @@ class MujocoViewer(QMainWindow):
         parent.addWidget(control_widget)
 
     def setupInfoPanel(self, parent):
-        """设置右侧信息面板"""
+        """Setup right info panel"""
         info_widget = QWidget()
         info_layout = QVBoxLayout()
         info_widget.setLayout(info_layout)
 
-        # 模型信息
-        model_info_group = QGroupBox("模型信息")
+        # Model information
+        model_info_group = QGroupBox("Model Information")
         model_info_layout = QVBoxLayout()
 
-        self.model_info_label = QLabel("未加载模型")
+        self.model_info_label = QLabel("No model loaded")
         self.model_info_label.setWordWrap(True)
         self.model_info_label.setStyleSheet("padding: 10px; background-color: #f0f0f0; border-radius: 5px;")
 
@@ -440,23 +476,122 @@ class MujocoViewer(QMainWindow):
         model_info_group.setLayout(model_info_layout)
         info_layout.addWidget(model_info_group)
 
-        # 关节信息
-        joint_info_group = QGroupBox("关节信息")
-        joint_info_layout = QVBoxLayout()
+        # Relative pose calculation
+        pose_group = QGroupBox("Relative Pose Calculation")
+        pose_layout = QGridLayout()
+        pose_layout.setColumnStretch(1, 1)
 
-        self.joint_info_label = QLabel("未加载模型")
-        self.joint_info_label.setWordWrap(True)
-        self.joint_info_label.setStyleSheet("padding: 10px; background-color: #f0f0f0; border-radius: 5px;")
+        # --- Source selection ---
+        pose_layout.addWidget(QLabel("Source Type:"), 0, 0)
+        self.source_type_combo = QComboBox()
+        self.source_type_combo.addItems(["Body", "Geom", "Joint"])
+        pose_layout.addWidget(self.source_type_combo, 0, 1)
 
-        joint_info_layout.addWidget(self.joint_info_label)
-        joint_info_group.setLayout(joint_info_layout)
-        info_layout.addWidget(joint_info_group)
+        pose_layout.addWidget(QLabel("Source Name:"), 1, 0)
+        self.source_name_combo = QComboBox()
+        self.source_name_combo.setMinimumWidth(150)
+        self.source_name_combo.setMaxVisibleItems(10)  # Maximum 10 items displayed, scroll bar shown if exceeded
+        pose_layout.addWidget(self.source_name_combo, 1, 1)
+        
+        # --- Target selection ---
+        pose_layout.addWidget(QLabel("Target Type:"), 2, 0)
+        self.target_type_combo = QComboBox()
+        self.target_type_combo.addItems(["Body", "Geom", "Joint"])
+        pose_layout.addWidget(self.target_type_combo, 2, 1)
 
-        # 状态信息
-        status_group = QGroupBox("状态信息")
+        pose_layout.addWidget(QLabel("Target Name:"), 3, 0)
+        self.target_name_combo = QComboBox()
+        self.target_name_combo.setMaxVisibleItems(10)  # Maximum 10 items displayed, scroll bar shown if exceeded
+        pose_layout.addWidget(self.target_name_combo, 3, 1)
+
+        # --- Connect signals ---
+        self.source_type_combo.currentIndexChanged.connect(
+            lambda: self._on_selection_changed(self.source_type_combo, self.source_name_combo)
+        )
+        self.target_type_combo.currentIndexChanged.connect(
+            lambda: self._on_selection_changed(self.target_type_combo, self.target_name_combo)
+        )
+        
+        # Connect name selection change signals
+        self.source_name_combo.currentTextChanged.connect(self._update_highlights)
+        self.target_name_combo.currentTextChanged.connect(self._update_highlights)
+
+        # Calculate and highlight buttons
+        button_layout = QHBoxLayout()
+        
+        self.calculate_pose_btn = QPushButton("Calculate Relative Pose")
+        self.calculate_pose_btn.clicked.connect(self.calculate_relative_pose)
+        button_layout.addWidget(self.calculate_pose_btn)
+        
+        self.clear_highlight_btn = QPushButton("Clear Highlights")
+        self.clear_highlight_btn.clicked.connect(self._clear_all_highlights)
+        self.clear_highlight_btn.setStyleSheet("QPushButton { background-color: #ffeb3b; }")
+        button_layout.addWidget(self.clear_highlight_btn)
+        
+        pose_layout.addLayout(button_layout, 4, 0, 1, 2)
+        
+        # Mass and Inertia Analysis Section
+        inertia_group = QGroupBox("Mass and Inertia Analysis")
+        inertia_layout = QVBoxLayout()
+        
+        # Buttons for inertia calculation
+        inertia_btn_layout = QHBoxLayout()
+        
+        self.calc_current_inertia_btn = QPushButton("Calculate Current Inertia")
+        self.calc_current_inertia_btn.clicked.connect(self.calculate_current_inertia)
+        self.calc_current_inertia_btn.setStyleSheet("QPushButton { background-color: #2196F3; color: white; }")
+        inertia_btn_layout.addWidget(self.calc_current_inertia_btn)
+        
+        self.calc_q0_inertia_btn = QPushButton("Calculate q0 Inertia")
+        self.calc_q0_inertia_btn.clicked.connect(self.calculate_q0_inertia)
+        self.calc_q0_inertia_btn.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; }")
+        inertia_btn_layout.addWidget(self.calc_q0_inertia_btn)
+        
+        inertia_layout.addLayout(inertia_btn_layout)
+        
+        # Results display with scroll area
+        self.inertia_results_scroll = QScrollArea()
+        self.inertia_results_scroll.setWidgetResizable(True)
+        self.inertia_results_scroll.setMinimumHeight(200)
+        self.inertia_results_scroll.setMaximumHeight(400)
+        
+        self.inertia_results_label = QLabel("Load a model and click a button to calculate inertia properties")
+        self.inertia_results_label.setWordWrap(True)
+        self.inertia_results_label.setStyleSheet("padding: 10px; background-color: #f0f0f0; border-radius: 5px; font-family: monospace; font-size: 10px;")
+        self.inertia_results_label.setAlignment(Qt.AlignTop)
+        
+        self.inertia_results_scroll.setWidget(self.inertia_results_label)
+        inertia_layout.addWidget(self.inertia_results_scroll)
+        
+        inertia_group.setLayout(inertia_layout)
+        info_layout.addWidget(inertia_group)
+
+        # Highlight status indicator
+        self.highlight_status_label = QLabel("Highlight Status: No objects selected")
+        self.highlight_status_label.setStyleSheet("""
+            QLabel { 
+                background-color: #e3f2fd; 
+                padding: 5px; 
+                border: 1px solid #90caf9;
+                border-radius: 3px;
+                font-size: 10px;
+            }
+        """)
+        pose_layout.addWidget(self.highlight_status_label, 5, 0, 1, 2)
+
+        self.relative_pose_label = QLabel("Please load a model and select two objects first")
+        self.relative_pose_label.setWordWrap(True)
+        self.relative_pose_label.setStyleSheet("padding: 10px; background-color: #f0f0f0; border-radius: 5px; min-height: 80px;")
+        pose_layout.addWidget(self.relative_pose_label, 6, 0, 1, 2)
+
+        pose_group.setLayout(pose_layout)
+        info_layout.addWidget(pose_group)
+
+        # Status information
+        status_group = QGroupBox("Status Information")
         status_layout = QVBoxLayout()
 
-        self.status_label = QLabel("就绪")
+        self.status_label = QLabel("Ready")
         self.status_label.setStyleSheet("padding: 10px; background-color: #e8f5e8; border-radius: 5px; color: #2e7d32;")
 
         status_layout.addWidget(self.status_label)
@@ -466,15 +601,15 @@ class MujocoViewer(QMainWindow):
         parent.addWidget(info_widget)
 
     def _save_last_path(self, path):
-        """保存最后成功加载的路径"""
+        """Save the last successfully loaded path"""
         try:
             with open(self.config_file_path, 'w') as f:
                 f.write(path)
         except Exception as e:
-            print(f"警告: 无法保存上次路径: {e}")
+            print(f"Warning: Cannot save last path: {e}")
 
     def _load_last_path(self):
-        """在启动时加载并设置上次的路径"""
+        """Load and set the last path on startup"""
         try:
             if os.path.exists(self.config_file_path):
                 with open(self.config_file_path, 'r') as f:
@@ -482,86 +617,121 @@ class MujocoViewer(QMainWindow):
                     if path and os.path.exists(path):
                         self.file_path_edit.setText(path)
         except Exception as e:
-            print(f"警告: 无法加载上次路径: {e}")
+            print(f"Warning: Cannot load last path: {e}")
 
     def browse_file(self):
-        """浏览文件"""
+        """Browse file"""
+        # Get the directory of the last opened file as default path
+        start_dir = ""
+        current_path = self.file_path_edit.text().strip()
+        if current_path and os.path.exists(current_path):
+            # If current path is valid, use its directory
+            start_dir = os.path.dirname(current_path)
+        elif os.path.exists(self.config_file_path):
+            # Otherwise try to load last path from config file
+            try:
+                with open(self.config_file_path, 'r') as f:
+                    last_path = f.read().strip()
+                    if last_path and os.path.exists(last_path):
+                        start_dir = os.path.dirname(last_path)
+            except Exception:
+                pass
+        
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择Mujoco XML文件", "", "XML Files (*.xml);;All Files (*)"
+            self, "Select MuJoCo XML File", start_dir, "XML Files (*.xml);;All Files (*)"
         )
         if file_path:
             self.file_path_edit.setText(file_path)
 
     def load_model(self):
-        """加载模型"""
+        """Load model"""
         file_path = self.file_path_edit.text().strip()
         if not file_path:
-            QMessageBox.warning(self, "警告", "请先选择XML文件！")
+            QMessageBox.warning(self, "Warning", "Please select an XML file first!")
             return
 
         if not os.path.exists(file_path):
-            QMessageBox.warning(self, "警告", "文件不存在！")
+            QMessageBox.warning(self, "Warning", "File does not exist!")
             return
 
         try:
-            # 停止当前查看器
+            # Stop current viewer
             if self.is_viewer_running:
                 self.stop_viewer()
 
-            # 加载模型
+            # Load model
             self.model = mujoco.MjModel.from_xml_path(file_path)
             self.data = mujoco.MjData(self.model)
-
+            
+            print("MuJoCo model loaded successfully")
+            
             self._save_last_path(file_path)
 
-            # 更新界面
-            # 先创建控件，这样可以识别出自由关节
+            # Update interface
+            # Read all available names
+            self.populate_name_lists()
+            # Save original colors for highlighting
+            self._save_original_colors()
+
+            # First create joint controls
             self.create_joint_controls()
-            # 然后更新信息，此时可以正确计算关节数量
+            # Update model information
             self.update_model_info() 
-            self.reset_pose() # 重置并更新所有控件
+            # Populate pose calculation selectors
+            self.populate_pose_selectors()
+            # Reset all states
+            self.reset_pose()
 
             self.start_viewer_btn.setEnabled(True)
+            self.start_sim_btn.setEnabled(True)
             self.reset_btn.setEnabled(True)
 
-            self.status_label.setText("模型加载成功")
+            self.status_label.setText("Model loaded successfully (MuJoCo only)")
             self.status_label.setStyleSheet(
                 "padding: 10px; background-color: #e8f5e8; border-radius: 5px; color: #2e7d32;")
 
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"加载模型失败：{str(e)}")
-            self.status_label.setText(f"加载失败：{str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to load model: {str(e)}")
+            self.status_label.setText(f"Loading failed: {str(e)}")
             self.status_label.setStyleSheet(
                 "padding: 10px; background-color: #ffebee; border-radius: 5px; color: #c62828;")
 
     def update_model_info(self):
-        """更新模型信息"""
+        """Update model information"""
         if self.model is None:
             return
 
         joint_count = self.model.njnt
-        # 如果存在自由关节（基座），则在总数中减去1
+        # If a free joint (base) exists, subtract 1 from total count
         if self.free_joint_id != -1:
             joint_count -= 1
 
+        # Calculate total mass and COM-referenced inertia matrix
+        total_mass, com_inertia = self.calculate_mass_and_inertia()
+        
         info_text = f"""
-模型名称: {getattr(self.model, 'name', '未命名')}
-关节数量: {joint_count}
-自由度: {self.model.nv}
-刚体数量: {self.model.nbody}
-几何体数量: {self.model.ngeom}
+Model Name: {getattr(self.model, 'name', 'Unnamed')}
+Joint Count: {joint_count}
+Degrees of Freedom: {self.model.nv}
+Body Count: {self.model.nbody}
+Geometry Count: {self.model.ngeom}
+Total Mass: {total_mass:.3f} kg
+COM Inertia Matrix (kg⋅m²):
+  [{com_inertia[0,0]:.4f}, {com_inertia[0,1]:.4f}, {com_inertia[0,2]:.4f}]
+  [{com_inertia[1,0]:.4f}, {com_inertia[1,1]:.4f}, {com_inertia[1,2]:.4f}]
+  [{com_inertia[2,0]:.4f}, {com_inertia[2,1]:.4f}, {com_inertia[2,2]:.4f}]
       """.strip()
 
         self.model_info_label.setText(info_text)
 
     def create_joint_controls(self):
-        """创建关节控制组件"""
-        # 清除现有控件
+        """Create joint control widgets"""
+        # Clear existing controls
         for control in self.joint_controls:
             control.deleteLater()
         self.joint_controls.clear()
 
-        # 清除布局中的所有项目
+        # Clear all items in layout
         while self.joint_layout.count():
             child = self.joint_layout.takeAt(0)
             if child.widget():
@@ -575,78 +745,99 @@ class MujocoViewer(QMainWindow):
         if self.model is None:
             return
 
-        joint_info_text = "关节列表:\n"
-
-        # 为每个关节创建控制组件
+        # Create control widgets for each joint
         for i in range(self.model.njnt):
             joint_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_JOINT, i)
             if joint_name is None:
                 joint_name = f"joint_{i}"
 
-            # 获取关节类型和范围
+            # Get joint type and range
             joint_type = self.model.jnt_type[i]
             
-            # --- 基座检测和处理 ---
+            # --- Base detection and handling ---
             if joint_type == mujoco.mjtJoint.mjJNT_FREE and self.free_joint_id == -1:
                 self.free_joint_id = i
                 self.free_joint_qpos_addr = self.model.jnt_qposadr[i]
                 self.base_control_group.setVisible(True)
-                joint_info_text += f"  - 基座: {joint_name} (XYZ, RPY)\n"
-                continue # 不为基座创建普通关节控制器
+                continue # Don't create regular joint controller for base
 
             joint_range = self.model.jnt_range[i]
 
-            # 如果关节范围为0，设置默认范围
+            # If joint range is 0, set default range
             if joint_range[0] == joint_range[1]:
-                if joint_type == mujoco.mjtJoint.mjJNT_HINGE:  # 旋转关节
+                if joint_type == mujoco.mjtJoint.mjJNT_HINGE:  # Revolute joint
                     joint_range = [-np.pi, np.pi]
-                else:  # 滑动关节
+                else:  # Prismatic joint
                     joint_range = [-1.0, 1.0]
 
-            joint_info_text += f"  {i}: {joint_name} (类型: {joint_type})\n"
-
-            # 创建控制组件
+            # Create control widget
             control = JointControlWidget(i, joint_name, joint_range, joint_type)
             control.valueChanged.connect(self.on_joint_value_changed)
 
             self.joint_controls.append(control)
             self.joint_layout.addWidget(control)
 
-        # 添加弹簧
+        # Add stretch
         self.joint_layout.addStretch()
 
-        self.joint_info_label.setText(joint_info_text)
-
     def on_joint_value_changed(self, joint_id, value):
-        """关节值改变时的回调"""
+        """Callback when joint value changes"""
         if self.data is not None and self.model is not None:
-            # 获取该关节在qpos数组中的起始地址
-            qpos_addr = self.model.jnt_qposadr[joint_id]
+            # 🔧 线程安全：始终通过调度机制更新
+            self._schedule_joint_update(joint_id, value)
 
-            # 更新qpos中的值. 对于单自由度关节，这会直接设置正确的值。
+            # 如果viewer没运行，立即应用更新
+            if not self.is_viewer_running:
+                self._apply_pending_updates()
+
+    def _schedule_joint_update(self, joint_id, value):
+        """🔧 线程安全地调度joint更新"""
+        with self._update_lock:
+            self._pending_joint_updates[joint_id] = value
+
+    def _apply_pending_updates(self):
+        """🔧 应用所有待处理的关节更新（线程安全）"""
+        if self.model is None or self.data is None:
+            return
+
+        # 获取并清空待处理更新
+        with self._update_lock:
+            updates = self._pending_joint_updates.copy()
+            self._pending_joint_updates.clear()
+
+        # 应用所有更新
+        for joint_id, value in updates.items():
+            qpos_addr = self.model.jnt_qposadr[joint_id]
             if qpos_addr < self.model.nq:
                 self.data.qpos[qpos_addr] = value
-                # 前向运动学计算，这对于更新模型中依赖此关节的其他部分至关重要
-                mujoco.mj_forward(self.model, self.data)
+
+        # 只在有更新时才执行forward
+        if updates:
+            mujoco.mj_forward(self.model, self.data)
+
+    def _schedule_base_update(self, pos, quat):
+        """🔧 线程安全地调度base更新"""
+        with self._update_lock:
+            self._pending_base_update = {'pos': pos.copy(), 'quat': quat.copy()}
 
     def on_base_control_changed(self):
-        """基座控制器值改变时的回调"""
+        """Callback when base controller value changes"""
         if self.data is None or self.free_joint_id == -1:
             return
 
         pos, rpy = self.base_control_widget.get_values()
 
-        # 更新位置
+        # Update position
         self.data.qpos[self.free_joint_qpos_addr:self.free_joint_qpos_addr + 3] = pos
 
-        # 更新姿态 (RPY -> 四元数)
+        # Update orientation (RPY -> quaternion)
         quat = euler_to_quaternion(rpy)
         self.data.qpos[self.free_joint_qpos_addr + 3:self.free_joint_qpos_addr + 7] = quat
 
         mujoco.mj_forward(self.model, self.data)
 
     def start_viewer(self):
-        """启动查看器"""
+        """Start viewer"""
         if self.model is None:
             return
 
@@ -659,11 +850,16 @@ class MujocoViewer(QMainWindow):
 
         self.start_viewer_btn.setEnabled(False)
         self.stop_viewer_btn.setEnabled(True)
-        self.status_label.setText("查看器运行中...")
+        self.start_sim_btn.setEnabled(True)
+        self.status_label.setText("Viewer running...")
         self.status_label.setStyleSheet("padding: 10px; background-color: #e3f2fd; border-radius: 5px; color: #1565c0;")
 
     def stop_viewer(self):
-        """停止查看器"""
+        """Stop viewer"""
+        # First stop simulation
+        if self.is_simulation_running:
+            self.stop_simulation()
+            
         self.is_viewer_running = False
 
         if self.viewer is not None:
@@ -676,101 +872,766 @@ class MujocoViewer(QMainWindow):
 
         self.start_viewer_btn.setEnabled(True)
         self.stop_viewer_btn.setEnabled(False)
-        self.status_label.setText("查看器已停止")
+        self.start_sim_btn.setEnabled(False)
+        self.stop_sim_btn.setEnabled(False)
+        self.status_label.setText("Viewer stopped")
         self.status_label.setStyleSheet("padding: 10px; background-color: #fff3e0; border-radius: 5px; color: #e65100;")
 
     def viewer_loop(self):
-        """查看器主循环"""
+        """Viewer main loop"""
         try:
             with mujoco.viewer.launch_passive(self.model, self.data) as viewer:
                 self.viewer = viewer
 
-                # 设置相机
+                # Set camera
                 viewer.cam.azimuth = 90
                 viewer.cam.elevation = -20
                 viewer.cam.distance = 3.0
 
                 while self.is_viewer_running and viewer.is_running():
-                    # 步进仿真
-                    # mujoco.mj_step(self.model, self.data)
+                    # 🔧 应用待处理的joint更新（线程安全）
+                    self._apply_pending_updates()
 
-                    # 同步查看器
+                    # If simulation is running, step simulation
+                    if self.is_simulation_running:
+                        # Add control torques for joint fixing
+                        self._apply_joint_holding_torques()
+                        mujoco.mj_step(self.model, self.data)
+
+                    # Sync viewer
                     viewer.sync()
 
-                    # 控制帧率
+                    # Control frame rate
                     time.sleep(0.01)
 
         except Exception as e:
-            print(f"查看器错误: {e}")
+            print(f"Viewer error: {e}")
             self.is_viewer_running = False
 
-        # 在主线程中更新UI
+        # Update UI in main thread
         QTimer.singleShot(0, self._on_viewer_closed)
 
     def _on_viewer_closed(self):
-        """查看器关闭后的处理"""
+        """Handle viewer closed event"""
         self.viewer = None
         self.is_viewer_running = False
+        self.is_simulation_running = False
         self.start_viewer_btn.setEnabled(True)
         self.stop_viewer_btn.setEnabled(False)
-        self.status_label.setText("查看器已关闭")
+        self.start_sim_btn.setEnabled(False)
+        self.stop_sim_btn.setEnabled(False)
+        self.status_label.setText("Viewer closed")
         self.status_label.setStyleSheet("padding: 10px; background-color: #f5f5f5; border-radius: 5px; color: #616161;")
 
     def reset_pose(self):
-        """重置到初始姿态"""
+        """Reset to initial pose"""
         if self.data is None:
             return
 
-        # 重置所有关节位置
+        # Stop simulation
+        if self.is_simulation_running:
+            self.stop_simulation()
+
+        # Reset all joint positions
         mujoco.mj_resetData(self.model, self.data)
 
-        # 更新基座控件显示
+        # Load keyframe 'home' if it exists
+        home_key_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_KEY, 'home')
+        if home_key_id >= 0:
+            # Copy keyframe qpos to current data
+            self.data.qpos[:] = self.model.key_qpos[home_key_id]
+            print(f"Loaded keyframe 'home': qpos = {self.data.qpos}")
+        else:
+            print("No 'home' keyframe found, using default reset")
+
+        # Update base control display
         if self.free_joint_id != -1:
             self.update_base_controls_from_data()
 
-        # 更新关节控件显示
+        # Update joint control display
         for control in self.joint_controls:
             joint_id = control.joint_id
-            # 找到关节对应的qpos地址
+            # Find the qpos address corresponding to the joint
             qpos_addr = self.model.jnt_qposadr[joint_id]
             if qpos_addr < len(self.data.qpos):
                 control.set_value(self.data.qpos[qpos_addr])
 
-        # 前向运动学计算
+        # Forward kinematics calculation
         mujoco.mj_forward(self.model, self.data)
 
-        self.status_label.setText("姿态已重置")
+        self.status_label.setText("Pose reset to 'home' keyframe")
         self.status_label.setStyleSheet("padding: 10px; background-color: #e8f5e8; border-radius: 5px; color: #2e7d32;")
 
+    def start_simulation(self):
+        """Start simulation (fixed joints)"""
+        if self.model is None or self.data is None:
+            return
+
+        if not self.is_viewer_running:
+            QMessageBox.warning(self, "Warning", "Please start the viewer first!")
+            return
+
+        self.is_simulation_running = True
+        
+        # Save current joint target positions for fixing
+        self._save_joint_target_positions()
+        
+        self.start_sim_btn.setEnabled(False)
+        self.stop_sim_btn.setEnabled(True)
+        
+        self.status_label.setText("Simulation running (fixed joints), observing stability...")
+        self.status_label.setStyleSheet("padding: 10px; background-color: #e3f2fd; border-radius: 5px; color: #1565c0;")
+
+    def stop_simulation(self):
+        """Stop simulation"""
+        self.is_simulation_running = False
+        
+        self.start_sim_btn.setEnabled(True)
+        self.stop_sim_btn.setEnabled(False)
+        
+        self.status_label.setText("Simulation stopped")
+        self.status_label.setStyleSheet("padding: 10px; background-color: #fff3e0; border-radius: 5px; color: #e65100;")
+
+    def _save_joint_target_positions(self):
+        """Save current joint positions as fixed targets"""
+        if self.model is None or self.data is None:
+            return
+            
+        self.joint_target_positions = {}
+        
+        for i in range(self.model.njnt):
+            # Skip free joint (base)
+            if i == self.free_joint_id:
+                continue
+                
+            qpos_addr = self.model.jnt_qposadr[i]
+            if qpos_addr < len(self.data.qpos):
+                self.joint_target_positions[i] = self.data.qpos[qpos_addr]
+
+    def _apply_joint_holding_torques(self):
+        """Apply joint holding torques to fix joint positions"""
+        if self.model is None or self.data is None:
+            return
+            
+        if not hasattr(self, 'joint_target_positions'):
+            return
+            
+        # PD control parameters
+        kp = 500.0  # Position gain
+        kd = 50.0   # Velocity gain
+        
+        for joint_id, target_pos in self.joint_target_positions.items():
+            # Get joint positions in arrays
+            qpos_addr = self.model.jnt_qposadr[joint_id]
+            qvel_addr = self.model.jnt_dofadr[joint_id]
+            
+            if qpos_addr < len(self.data.qpos) and qvel_addr < len(self.data.qvel):
+                # Calculate position error and velocity
+                pos_error = target_pos - self.data.qpos[qpos_addr]
+                velocity = self.data.qvel[qvel_addr]
+                
+                # PD control torque
+                torque = kp * pos_error - kd * velocity
+                
+                # Apply torque (limit maximum torque)
+                max_torque = 100.0
+                torque = np.clip(torque, -max_torque, max_torque)
+                
+                # Set control input
+                if qvel_addr < len(self.data.ctrl):
+                    self.data.ctrl[qvel_addr] = torque
+
     def update_base_controls_from_data(self):
-        """从Mujoco数据更新基座UI控件"""
+        """Update base UI controls from MuJoCo data"""
         if self.data is None or self.free_joint_id == -1:
             return
 
-        # 获取位置
+        # Get position
         pos = self.data.qpos[self.free_joint_qpos_addr:self.free_joint_qpos_addr + 3]
 
-        # 获取姿态 (四元数 -> RPY)
+        # Get orientation (quaternion -> RPY)
         quat = self.data.qpos[self.free_joint_qpos_addr + 3:self.free_joint_qpos_addr + 7]
         rpy = quaternion_to_euler(quat)
 
         self.base_control_widget.set_values(pos, rpy)
 
+    def populate_name_lists(self):
+        """When loading model, read and store all body, geom, joint names"""
+        if self.model is None:
+            self.body_names, self.joint_names, self.geom_names = [], [], []
+            return
+
+        # First get all names (may contain None)
+        raw_body_names = [mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, i) for i in range(1, self.model.nbody)]
+        raw_joint_names = [mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_JOINT, i) for i in range(self.model.njnt)]
+        raw_geom_names = []
+        
+        # Handle geom names, including unnamed geoms
+        for i in range(self.model.ngeom):
+            name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, i)
+            if name is None:
+                # Generate default name for unnamed geoms
+                name = f"geom_{i}"
+            raw_geom_names.append(name)
+        
+        # First filter out None values, then sort
+        self.body_names = sorted([name for name in raw_body_names if name])
+        self.joint_names = sorted([name for name in raw_joint_names if name])
+        self.geom_names = sorted(raw_geom_names)  # geom_names already doesn't contain None
+
+    def _on_type_changed(self, type_combo, name_combo):
+        """When type dropdown changes, update name dropdown content"""
+        selected_type = type_combo.currentText()
+        name_combo.clear()
+
+        if selected_type == "Body":
+            name_combo.addItems(self.body_names)
+        elif selected_type == "Geom":
+            name_combo.addItems(self.geom_names)
+        elif selected_type == "Joint":
+            name_combo.addItems(self.joint_names)
+
+    def _on_selection_changed(self, type_combo, name_combo):
+        """Handler for when type selection changes"""
+        self._on_type_changed(type_combo, name_combo)
+        # Delay highlight update to let name dropdown update first
+        if hasattr(self, 'model') and self.model is not None:
+            QTimer.singleShot(50, self._update_highlights)
+
+    def populate_pose_selectors(self):
+        """Populate selectors for relative pose calculation"""
+        # Trigger type switch signal once to populate initial name lists
+        self._on_type_changed(self.source_type_combo, self.source_name_combo)
+        self._on_type_changed(self.target_type_combo, self.target_name_combo)
+        self.relative_pose_label.setText("Please select two objects for calculation")
+        
+        # Initialize highlight status
+        self._update_highlight_status()
+
+    def _save_original_colors(self):
+        """Save original colors of all geoms"""
+        if self.model is None:
+            return
+        self.original_geom_colors = {}
+        for i in range(self.model.ngeom):
+            # Save original rgba values
+            self.original_geom_colors[i] = self.model.geom_rgba[i].copy()
+
+    def _highlight_object(self, obj_type, obj_name, color, highlight_type):
+        """Highlight specified object
+        Args:
+            obj_type: Object type ("Body", "Geom", "Joint")
+            obj_name: Object name
+            color: Highlight color [r, g, b, a]
+            highlight_type: 'source' or 'target'
+        """
+        if self.model is None or not obj_name:
+            return
+
+        # First restore previously highlighted object
+        old_obj = self.highlighted_objects[highlight_type]
+        if old_obj:
+            self._restore_object_color(old_obj['type'], old_obj['name'])
+
+        try:
+            if obj_type == "Geom":
+                # Get geom ID
+                if obj_name.startswith("geom_"):
+                    geom_id = int(obj_name.split("_")[1])
+                else:
+                    geom_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, obj_name)
+                    if geom_id == -1:
+                        return
+
+                # Set highlight color
+                self.model.geom_rgba[geom_id] = color
+                
+            elif obj_type == "Body":
+                # For body, highlight all associated geoms
+                body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, obj_name)
+                if body_id == -1:
+                    return
+                
+                # Find all geoms belonging to this body
+                for geom_id in range(self.model.ngeom):
+                    if self.model.geom_bodyid[geom_id] == body_id:
+                        self.model.geom_rgba[geom_id] = color
+
+            elif obj_type == "Joint":
+                # For joint, highlight geoms of its body
+                joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, obj_name)
+                if joint_id == -1:
+                    return
+                
+                body_id = self.model.jnt_bodyid[joint_id]
+                # Find all geoms belonging to this body
+                for geom_id in range(self.model.ngeom):
+                    if self.model.geom_bodyid[geom_id] == body_id:
+                        self.model.geom_rgba[geom_id] = color
+
+            # Record currently highlighted object
+            self.highlighted_objects[highlight_type] = {
+                'type': obj_type,
+                'name': obj_name
+            }
+
+        except (ValueError, IndexError):
+            pass  # Ignore errors
+
+    def _restore_object_color(self, obj_type, obj_name):
+        """Restore object's original color"""
+        if self.model is None or not obj_name:
+            return
+
+        try:
+            if obj_type == "Geom":
+                # Get geom ID
+                if obj_name.startswith("geom_"):
+                    geom_id = int(obj_name.split("_")[1])
+                else:
+                    geom_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, obj_name)
+                    if geom_id == -1:
+                        return
+
+                # Restore original color
+                if geom_id in self.original_geom_colors:
+                    self.model.geom_rgba[geom_id] = self.original_geom_colors[geom_id]
+                
+            elif obj_type == "Body":
+                # For body, restore colors of all associated geoms
+                body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, obj_name)
+                if body_id == -1:
+                    return
+                
+                # Restore all geoms belonging to this body
+                for geom_id in range(self.model.ngeom):
+                    if self.model.geom_bodyid[geom_id] == body_id:
+                        if geom_id in self.original_geom_colors:
+                            self.model.geom_rgba[geom_id] = self.original_geom_colors[geom_id]
+
+            elif obj_type == "Joint":
+                # For joint, restore geom colors of its body
+                joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, obj_name)
+                if joint_id == -1:
+                    return
+                
+                body_id = self.model.jnt_bodyid[joint_id]
+                # Restore all geoms belonging to this body
+                for geom_id in range(self.model.ngeom):
+                    if self.model.geom_bodyid[geom_id] == body_id:
+                        if geom_id in self.original_geom_colors:
+                            self.model.geom_rgba[geom_id] = self.original_geom_colors[geom_id]
+
+        except (ValueError, IndexError):
+            pass  # Ignore errors
+
+    def _update_highlights(self):
+        """Update highlight display based on current selection"""
+        if self.model is None:
+            return
+
+        # Get current selection
+        source_type = self.source_type_combo.currentText()
+        source_name = self.source_name_combo.currentText()
+        target_type = self.target_type_combo.currentText()
+        target_name = self.target_name_combo.currentText()
+
+        # Red highlight for source object
+        self._highlight_object(source_type, source_name, [1.0, 0.0, 0.0, 1.0], 'source')
+        
+        # Blue highlight for target object
+        self._highlight_object(target_type, target_name, [0.0, 0.0, 1.0, 1.0], 'target')
+        
+
+        
+        # Update status indicator
+        self._update_highlight_status()
+
+    def _clear_all_highlights(self):
+        """Clear all highlights and restore original colors"""
+        if self.model is None:
+            return
+
+        # Restore original colors for all geoms
+        for geom_id, original_color in self.original_geom_colors.items():
+            if geom_id < self.model.ngeom:
+                self.model.geom_rgba[geom_id] = original_color
+
+        # Clear highlight records
+        self.highlighted_objects = {'source': None, 'target': None}
+        
+
+        
+        # Update status indicator
+        self._update_highlight_status()
+
+    def calculate_mass_and_inertia(self):
+        """Calculate total mass and inertia matrix using proper MuJoCo API."""
+        if self.model is None or self.data is None:
+            return 0.0, np.eye(3)
+        
+        # Forward kinematics to ensure data is current
+        mujoco.mj_forward(self.model, self.data)
+        
+        # Use MuJoCo's built-in function to get total mass
+        total_mass = mujoco.mj_getTotalmass(self.model)
+        
+        # Get joint-space inertia matrix using MuJoCo's built-in function
+        inertia_matrix = np.zeros((self.model.nv, self.model.nv))
+        mujoco.mj_fullM(self.model, inertia_matrix, self.data.qM)
+        
+        # Extract rotational inertia for floating base robot
+        if self.model.nv >= 6:
+            # For floating base, rotational inertia is in bottom-right 3x3 of 6x6 base block
+            rotational_inertia = inertia_matrix[3:6, 3:6]
+        else:
+            # Fallback for non-floating base robots
+            rotational_inertia = np.eye(3)
+        
+        return total_mass, rotational_inertia
+    
+    def calculate_mass_and_inertia_at_config(self, joint_config=None):
+        """Calculate mass and inertia at a specific joint configuration.
+        
+        Args:
+            joint_config: Joint configuration array. If None, uses current configuration.
+        """
+        if self.model is None or self.data is None:
+            return 0.0, np.eye(3), np.zeros(3)
+        
+        # Save current state
+        original_qpos = self.data.qpos.copy()
+        
+        try:
+            # Set joint configuration if provided
+            if joint_config is not None:
+                # Ensure configuration matches model DOFs
+                if len(joint_config) <= len(self.data.qpos):
+                    # For floating base robots, preserve base pose and set joint angles
+                    if self.free_joint_id != -1 and self.free_joint_qpos_addr != -1:
+                        # Keep base pose unchanged, set joint angles
+                        joint_start = self.free_joint_qpos_addr + 7  # After base pose (3 pos + 4 quat)
+                        joint_end = min(joint_start + len(joint_config), len(self.data.qpos))
+                        self.data.qpos[joint_start:joint_end] = joint_config[:joint_end-joint_start]
+                    else:
+                        # Direct joint configuration
+                        self.data.qpos[:len(joint_config)] = joint_config
+            
+            # Update kinematics
+            mujoco.mj_forward(self.model, self.data)
+            
+            # Calculate mass, inertia, and COM
+            total_mass, inertia_matrix = self.calculate_mass_and_inertia()
+            
+            # Calculate center of mass
+            com_position = self._calculate_center_of_mass()
+            
+            return total_mass, inertia_matrix, com_position
+            
+        finally:
+            # Restore original state
+            self.data.qpos[:] = original_qpos
+            mujoco.mj_forward(self.model, self.data)
+    
+    def _calculate_center_of_mass(self):
+        """Calculate center of mass of the system."""
+        if self.model is None or self.data is None:
+            return np.zeros(3)
+        
+        total_mass = 0.0
+        com_numerator = np.zeros(3)
+        
+        for i in range(self.model.nbody):
+            body_mass = self.model.body_mass[i]
+            if body_mass > 0:  # Skip massless bodies
+                total_mass += body_mass
+                body_pos = self.data.xpos[i]
+                com_numerator += body_mass * body_pos
+        
+        if total_mass > 0:
+            return com_numerator / total_mass
+        else:
+            return np.zeros(3)
+    
+    def _quat_to_rotation_matrix(self, quat):
+        """Convert quaternion [w, x, y, z] to rotation matrix."""
+        w, x, y, z = quat[0], quat[1], quat[2], quat[3]
+        
+        # Rotation matrix from quaternion
+        R = np.array([
+            [1 - 2*(y*y + z*z), 2*(x*y - w*z), 2*(x*z + w*y)],
+            [2*(x*y + w*z), 1 - 2*(x*x + z*z), 2*(y*z - w*x)],
+            [2*(x*z - w*y), 2*(y*z + w*x), 1 - 2*(x*x + y*y)]
+        ])
+        
+        return R
+    
+    def _skew_symmetric_matrix(self, vec):
+        """Create skew-symmetric matrix from 3D vector."""
+        return np.array([
+            [0, -vec[2], vec[1]],
+            [vec[2], 0, -vec[0]],
+            [-vec[1], vec[0], 0]
+        ])
+
+    def _update_highlight_status(self):
+        """Update highlight status indicator"""
+        source_obj = self.highlighted_objects.get('source')
+        target_obj = self.highlighted_objects.get('target')
+        
+        status_parts = []
+        
+        if source_obj and source_obj['name']:
+            status_parts.append(f"🔴 Source: {source_obj['name']}")
+        
+        if target_obj and target_obj['name']:
+            status_parts.append(f"🔵 Target: {target_obj['name']}")
+        
+        if status_parts:
+            status_text = "Highlight Status: " + " | ".join(status_parts)
+        else:
+            status_text = "Highlight Status: No objects selected"
+        
+        if hasattr(self, 'highlight_status_label'):
+            self.highlight_status_label.setText(status_text)
+    
+    def calculate_current_inertia(self):
+        """Calculate and display mass/inertia properties at current joint configuration."""
+        if self.model is None or self.data is None:
+            self.inertia_results_label.setText("No model loaded!")
+            return
+        
+        try:
+            # Calculate at current configuration
+            total_mass, inertia_matrix, com_pos = self.calculate_mass_and_inertia_at_config()
+            
+            # Format results for display
+            results_text = f"""CURRENT CONFIGURATION ANALYSIS:
+
+Mass: {total_mass:.3f} kg
+COM: [{com_pos[0]:.3f}, {com_pos[1]:.3f}, {com_pos[2]:.3f}] m
+
+Inertia Matrix (kg⋅m²):
+[{inertia_matrix[0,0]:.3f}, {inertia_matrix[0,1]:.3f}, {inertia_matrix[0,2]:.3f}]
+[{inertia_matrix[1,0]:.3f}, {inertia_matrix[1,1]:.3f}, {inertia_matrix[1,2]:.3f}]
+[{inertia_matrix[2,0]:.3f}, {inertia_matrix[2,1]:.3f}, {inertia_matrix[2,2]:.3f}]
+
+Diagonal Values:
+Ixx: {inertia_matrix[0,0]:.3f} kg⋅m²
+Iyy: {inertia_matrix[1,1]:.3f} kg⋅m²
+Izz: {inertia_matrix[2,2]:.3f} kg⋅m²"""
+            
+            self.inertia_results_label.setText(results_text)
+            
+        except Exception as e:
+            error_text = f"Error calculating current inertia:\n{str(e)}"
+            self.inertia_results_label.setText(error_text)
+    
+    def calculate_q0_inertia(self):
+        """Calculate and display mass/inertia properties at q0 configuration from H1 SRBD config."""
+        if self.model is None or self.data is None:
+            self.inertia_results_label.setText("No model loaded!")
+            return
+        
+        try:
+            # Import q0 from H1 SRBD config
+            try:
+                # Import the H1 SRBD config to get q0 values
+                import sys
+                import os
+                config_dir = os.path.join(os.path.dirname(__file__), '..', 'config')
+                if config_dir not in sys.path:
+                    sys.path.append(config_dir)
+                
+                from config_h1_srbd import q0 as h1_q0
+                
+                # Convert JAX array to numpy if needed
+                if hasattr(h1_q0, 'tolist'):
+                    q0_config = np.array(h1_q0.tolist())
+                else:
+                    q0_config = np.array(h1_q0)
+                    
+            except ImportError as e:
+                error_text = f"Could not import H1 SRBD config:\n{str(e)}\n\nUsing default q0 configuration..."
+                # Default H1 q0 configuration (legs only, 10 DOF)
+                q0_config = np.array([0, 0, -0.4, 0.8, -0.4,      # Left leg (5 DOF)
+                                     0, 0, -0.4, 0.8, -0.4])      # Right leg (5 DOF)
+                self.inertia_results_label.setText(error_text)
+                return
+            
+            # Calculate at q0 configuration
+            total_mass, inertia_matrix, com_pos = self.calculate_mass_and_inertia_at_config(q0_config)
+            
+            # Compare with current config values from H1 SRBD config
+            try:
+                from config_h1_srbd import mass as config_mass, inertia as config_inertia
+                if hasattr(config_inertia, 'tolist'):
+                    config_inertia_np = np.array(config_inertia.tolist())
+                else:
+                    config_inertia_np = np.array(config_inertia)
+                    
+                # Calculate ratios
+                mass_ratio = total_mass / config_mass if config_mass > 0 else 0
+                inertia_ratios = np.diag(inertia_matrix) / np.diag(config_inertia_np)
+                
+            except ImportError:
+                config_mass = 87.89  # Default from previous analysis
+                config_inertia_np = np.array([[17.993, 0.0, 0.0],
+                                             [0.0, 17.168, 0.0], 
+                                             [0.0, 0.0, 1.377]])
+                mass_ratio = total_mass / config_mass
+                inertia_ratios = np.diag(inertia_matrix) / np.diag(config_inertia_np)
+            
+            # Format results for display
+            results_text = f"""H1 q0 CONFIGURATION ANALYSIS:
+
+q0: {q0_config}
+
+Mass: {total_mass:.3f} kg
+COM: [{com_pos[0]:.3f}, {com_pos[1]:.3f}, {com_pos[2]:.3f}] m
+
+Inertia Matrix (kg⋅m²):
+[{inertia_matrix[0,0]:.3f}, {inertia_matrix[0,1]:.3f}, {inertia_matrix[0,2]:.3f}]
+[{inertia_matrix[1,0]:.3f}, {inertia_matrix[1,1]:.3f}, {inertia_matrix[1,2]:.3f}]
+[{inertia_matrix[2,0]:.3f}, {inertia_matrix[2,1]:.3f}, {inertia_matrix[2,2]:.3f}]
+
+CONFIG COMPARISON:
+Config Mass: {config_mass:.1f} kg (Ratio: {mass_ratio:.2f})
+Config Inertia: [{config_inertia_np[0,0]:.1f}, {config_inertia_np[1,1]:.1f}, {config_inertia_np[2,2]:.1f}]
+Ratios: [{inertia_ratios[0]:.2f}, {inertia_ratios[1]:.2f}, {inertia_ratios[2]:.2f}]
+
+SUGGESTED CONFIG UPDATE:
+mass = {total_mass:.3f}
+inertia = jnp.array([
+  [{inertia_matrix[0,0]:.3f}, 0.0, 0.0],
+  [0.0, {inertia_matrix[1,1]:.3f}, 0.0],
+  [0.0, 0.0, {inertia_matrix[2,2]:.3f}]])"""
+            
+            self.inertia_results_label.setText(results_text)
+            
+        except Exception as e:
+            error_text = f"Error calculating q0 inertia:\n{str(e)}"
+            self.inertia_results_label.setText(error_text)
+
+
+
+    def get_object_pose_mujoco(self, obj_type, obj_name):
+        """Get object's global pose based on type and name (using MuJoCo)"""
+        mujoco.mj_forward(self.model, self.data)
+
+        if obj_type == "Body":
+            obj_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, obj_name)
+            if obj_id == -1: raise ValueError(f"Body not found: {obj_name}")
+            pos = self.data.xpos[obj_id]
+            mat = self.data.xmat[obj_id].reshape(3, 3)
+            return pos, mat
+        elif obj_type == "Geom":
+            # Check if it's a generated default name
+            if obj_name.startswith("geom_"):
+                try:
+                    obj_id = int(obj_name.split("_")[1])
+                    if obj_id >= self.model.ngeom:
+                        raise ValueError(f"Geom ID out of range: {obj_id}")
+                except (ValueError, IndexError):
+                    raise ValueError(f"Invalid Geom name: {obj_name}")
+            else:
+                obj_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, obj_name)
+                if obj_id == -1: 
+                    raise ValueError(f"Geom not found: {obj_name}")
+            
+            pos = self.data.geom_xpos[obj_id]
+            mat = self.data.geom_xmat[obj_id].reshape(3, 3)
+            return pos, mat
+        elif obj_type == "Joint":
+            obj_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, obj_name)
+            if obj_id == -1: raise ValueError(f"Joint not found: {obj_name}")
+            # Position: use joint anchor's global position
+            pos = self.data.xanchor[obj_id]
+            # Orientation: use its parent body's orientation as proxy
+            body_id = self.model.jnt_bodyid[obj_id]
+            mat = self.data.xmat[body_id].reshape(3, 3)
+            return pos, mat
+        else:
+            raise TypeError(f"Unknown object type: {obj_type}")
+
+    def calculate_relative_pose(self):
+        """Calculate and display relative pose between two objects"""
+        if self.model:
+            try:
+                self.calculate_relative_pose_mujoco()
+            except Exception as e:
+                self.relative_pose_label.setText(f"MuJoCo calculation error: {e}")
+        else:
+            self.relative_pose_label.setText("Please load a model first")
+
+
+
+    def calculate_relative_pose_mujoco(self):
+        """Calculate relative pose using MuJoCo"""
+        source_type = self.source_type_combo.currentText()
+        source_name = self.source_name_combo.currentText()
+        target_type = self.target_type_combo.currentText()
+        target_name = self.target_name_combo.currentText()
+
+        if not source_name or not target_name:
+            self.relative_pose_label.setText("Please select source and target objects")
+            return
+
+        source_pos, source_mat = self.get_object_pose_mujoco(source_type, source_name)
+        target_pos, target_mat = self.get_object_pose_mujoco(target_type, target_name)
+
+        # Calculate relative position
+        source_mat_inv = source_mat.T
+        relative_pos = source_mat_inv @ (target_pos - source_pos)
+
+        # Calculate relative rotation
+        relative_mat = source_mat_inv @ target_mat
+        
+        # Convert rotation matrix to Euler angles (ZYX order, commonly used in MuJoCo)
+        sy = np.sqrt(relative_mat[0,0] * relative_mat[0,0] +  relative_mat[1,0] * relative_mat[1,0])
+        singular = sy < 1e-6
+        if not singular:
+            x = np.arctan2(relative_mat[2,1] , relative_mat[2,2])
+            y = np.arctan2(-relative_mat[2,0], sy)
+            z = np.arctan2(relative_mat[1,0], relative_mat[0,0])
+        else:
+            x = np.arctan2(-relative_mat[1,2], relative_mat[1,1])
+            y = np.arctan2(-relative_mat[2,0], sy)
+            z = 0
+
+        relative_rpy_rad = np.array([x, y, z])
+        relative_rpy_deg = np.rad2deg(relative_rpy_rad)
+
+        result_text = f"""
+<b>Relative pose from {source_type} '{source_name}' to {target_type} '{target_name}':</b>
+<br>
+<b>Relative Position (m):</b><br>
+&nbsp;&nbsp;X: {relative_pos[0]:.4f}<br>
+&nbsp;&nbsp;Y: {relative_pos[1]:.4f}<br>
+&nbsp;&nbsp;Z: {relative_pos[2]:.4f}<br>
+<br>
+<b>Relative Rotation (Euler ZYX, degrees):</b><br>
+&nbsp;&nbsp;Roll (X): {relative_rpy_deg[0]:.2f}°<br>
+&nbsp;&nbsp;Pitch (Y): {relative_rpy_deg[1]:.2f}°<br>
+&nbsp;&nbsp;Yaw (Z): {relative_rpy_deg[2]:.2f}°
+        """.strip()
+
+        self.relative_pose_label.setText(result_text)
 
     def closeEvent(self, event):
-        """窗口关闭事件"""
+        """Window close event"""
         if self.is_viewer_running:
             self.stop_viewer()
         event.accept()
 
 class ModernStyle:
-    """现代化的界面样式"""
+    """Modern interface style"""
 
     @staticmethod
     def apply(app):
         app.setStyle("Fusion")
 
-        # 创建调色板
+        # Create palette
         palette = QPalette()
         palette.setColor(QPalette.Window, QColor(240, 240, 240))
         palette.setColor(QPalette.WindowText, Qt.black)
@@ -788,7 +1649,7 @@ class ModernStyle:
 
         app.setPalette(palette)
 
-        # 设置样式表
+        # Set stylesheet
         app.setStyleSheet("""
             QMainWindow {
                 background-color: #f5f5f5;
@@ -881,24 +1742,76 @@ class ModernStyle:
             QSpinBox:focus, QDoubleSpinBox:focus {
                 border-color: #4CAF50;
             }
+
+            QComboBox {
+                border: 1px solid #cccccc;
+                border-radius: 4px;
+                padding: 5px;
+                background-color: white;
+                color: black;
+                min-height: 20px;
+            }
+
+            QComboBox:focus {
+                border-color: #4CAF50;
+            }
+
+            QComboBox::drop-down {
+                border: none;
+                width: 20px;
+            }
+
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 5px solid #666;
+                margin-right: 5px;
+            }
+
+            QComboBox QAbstractItemView {
+                border: 1px solid #cccccc;
+                background-color: white;
+                selection-background-color: #4CAF50;
+                selection-color: white;
+                outline: none;
+                margin: 0px;
+                padding: 0px;
+            }
+
+            QComboBox QAbstractItemView::item {
+                padding: 3px 8px;
+                border: none;
+                margin: 0px;
+                height: 20px;
+            }
+
+            QComboBox QAbstractItemView::item:selected {
+                background-color: #4CAF50;
+                color: white;
+            }
+
+            QComboBox QAbstractItemView::item:hover {
+                background-color: #e8f5e8;
+            }
         """)
 
 def main():
-    """主函数"""
+    """Main function"""
     app = QApplication(sys.argv)
 
-    # 应用现代化样式
+    # Apply modern style
     ModernStyle.apply(app)
 
-    # 设置应用程序信息
-    app.setApplicationName("Mujoco模型查看器")
+    # Set application information
+    app.setApplicationName("MuJoCo Model Viewer")
     app.setOrganizationName("MujocoViewer")
 
-    # 创建主窗口
+    # Create main window
     viewer = MujocoViewer()
     viewer.show()
 
-    # 运行应用
+    # Run application
     sys.exit(app.exec_())
 
 if __name__ == "__main__":
