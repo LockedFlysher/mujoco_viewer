@@ -5,7 +5,8 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QGridLayout, QPushButton, QLabel,
                              QSlider, QLineEdit, QFileDialog, QScrollArea,
                              QGroupBox, QSplitter, QMessageBox, QSpinBox,
-                             QDoubleSpinBox, QFrame, QCheckBox, QComboBox)
+                             QDoubleSpinBox, QFrame, QCheckBox, QComboBox,
+                             QTabWidget)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont, QPalette, QColor, QImage, QPainter
 import mujoco
@@ -317,6 +318,11 @@ class MujocoViewer(QMainWindow):
         self.free_joint_qpos_addr = -1
         self.config_file_path = os.path.join(os.path.expanduser('~'), '.mujoco_viewer_last_path.txt')
         
+        # Trajectory playback state
+        self.trajectory_data = None   # numpy array shape (N, D)
+        self.current_frame = 0
+        self.controlled_joint_count = 0
+        
         # Store names in the model
         self.body_names = []
         self.joint_names = []
@@ -331,7 +337,10 @@ class MujocoViewer(QMainWindow):
         self._pending_base_update = None
         self._update_lock = threading.Lock()
 
-
+        # Integrated Qt renderer (fallback for macOS)
+        self.render_widget = None
+        self.render_timer = QTimer(self)
+        self.render_timer.timeout.connect(self._render_tick)
 
         self.setupUI()
         self._load_last_path()
@@ -439,21 +448,72 @@ class MujocoViewer(QMainWindow):
         viewer_group.setLayout(viewer_layout)
         control_layout.addWidget(viewer_group)
 
-        # Joint control area
+        # Joint control area with tabs (manual control + trajectory playback)
         self.joint_group = QGroupBox("Joint Control")
+        joint_group_layout = QVBoxLayout()
+
+        # Tabs container
+        self.joint_tabs = QTabWidget()
+
+        # --- Manual Control Tab ---
+        manual_tab = QWidget()
+        manual_layout = QVBoxLayout()
         self.joint_scroll = QScrollArea()
         self.joint_scroll.setWidgetResizable(True)
         self.joint_scroll.setMinimumHeight(400)
-
         self.joint_widget = QWidget()
         self.joint_layout = QVBoxLayout()
         self.joint_widget.setLayout(self.joint_layout)
         self.joint_scroll.setWidget(self.joint_widget)
+        manual_layout.addWidget(self.joint_scroll)
+        manual_tab.setLayout(manual_layout)
 
-        joint_group_layout = QVBoxLayout()
-        joint_group_layout.addWidget(self.joint_scroll)
+        # --- Trajectory Playback Tab ---
+        playback_tab = QWidget()
+        playback_layout = QVBoxLayout()
+
+        # CSV selector
+        csv_row = QHBoxLayout()
+        self.csv_path_edit = QLineEdit()
+        self.csv_path_edit.setPlaceholderText("选择CSV轨迹文件...")
+        csv_browse_btn = QPushButton("浏览")
+        csv_browse_btn.clicked.connect(self.browse_csv)
+        csv_load_btn = QPushButton("加载CSV")
+        csv_load_btn.clicked.connect(self.load_csv_trajectory)
+        csv_row.addWidget(self.csv_path_edit)
+        csv_row.addWidget(csv_browse_btn)
+        csv_row.addWidget(csv_load_btn)
+        playback_layout.addLayout(csv_row)
+
+        # Info/status
+        self.traj_info_label = QLabel("未加载轨迹")
+        playback_layout.addWidget(self.traj_info_label)
+
+        # Timeline controls
+        timeline_row = QHBoxLayout()
+        self.prev_frame_btn = QPushButton("上一帧")
+        self.prev_frame_btn.clicked.connect(self.prev_frame)
+        self.next_frame_btn = QPushButton("下一帧")
+        self.next_frame_btn.clicked.connect(self.next_frame)
+        self.traj_slider = QSlider(Qt.Horizontal)
+        self.traj_slider.setRange(0, 0)
+        self.traj_slider.setEnabled(False)
+        self.prev_frame_btn.setEnabled(False)
+        self.next_frame_btn.setEnabled(False)
+        self.traj_slider.valueChanged.connect(self.on_traj_slider_changed)
+        timeline_row.addWidget(self.prev_frame_btn)
+        timeline_row.addWidget(self.traj_slider)
+        timeline_row.addWidget(self.next_frame_btn)
+        playback_layout.addLayout(timeline_row)
+
+        playback_tab.setLayout(playback_layout)
+
+        # Add tabs
+        self.joint_tabs.addTab(manual_tab, "手动控制")
+        self.joint_tabs.addTab(playback_tab, "轨迹播放")
+
+        joint_group_layout.addWidget(self.joint_tabs)
         self.joint_group.setLayout(joint_group_layout)
-
         control_layout.addWidget(self.joint_group)
 
         parent.addWidget(control_widget)
@@ -463,6 +523,14 @@ class MujocoViewer(QMainWindow):
         info_widget = QWidget()
         info_layout = QVBoxLayout()
         info_widget.setLayout(info_layout)
+
+        # Embedded render view (Qt-based)
+        render_group = QGroupBox("Render View (内嵌)")
+        render_layout = QVBoxLayout()
+        self.render_widget = MujocoWidget()
+        render_layout.addWidget(self.render_widget)
+        render_group.setLayout(render_layout)
+        info_layout.addWidget(render_group)
 
         # Model information
         model_info_group = QGroupBox("Model Information")
@@ -600,6 +668,10 @@ class MujocoViewer(QMainWindow):
 
         parent.addWidget(info_widget)
 
+    def _use_integrated_viewer(self):
+        # On macOS, prefer integrated Qt rendering to avoid mjpython requirement
+        return sys.platform == 'darwin'
+
     def _save_last_path(self, path):
         """Save the last successfully loaded path"""
         try:
@@ -675,6 +747,8 @@ class MujocoViewer(QMainWindow):
 
             # First create joint controls
             self.create_joint_controls()
+            # Reset trajectory UI for new model context
+            self._reset_trajectory_ui()
             # Update model information
             self.update_model_info() 
             # Populate pose calculation selectors
@@ -779,6 +853,135 @@ COM Inertia Matrix (kg⋅m²):
 
         # Add stretch
         self.joint_layout.addStretch()
+        self.controlled_joint_count = len(self.joint_controls)
+
+    # ---------------- Trajectory Playback (CSV) ----------------
+    def _reset_trajectory_ui(self):
+        self.trajectory_data = None
+        self.current_frame = 0
+        if hasattr(self, 'traj_slider'):
+            self.traj_slider.blockSignals(True)
+            self.traj_slider.setRange(0, 0)
+            self.traj_slider.setValue(0)
+            self.traj_slider.setEnabled(False)
+            self.traj_slider.blockSignals(False)
+        if hasattr(self, 'prev_frame_btn'):
+            self.prev_frame_btn.setEnabled(False)
+        if hasattr(self, 'next_frame_btn'):
+            self.next_frame_btn.setEnabled(False)
+        if hasattr(self, 'traj_info_label'):
+            expected = self.controlled_joint_count if self.model is not None else 0
+            self.traj_info_label.setText(f"未加载轨迹（期望维度: {expected}）")
+
+    def browse_csv(self):
+        start_dir = os.path.dirname(self.csv_path_edit.text().strip()) if self.csv_path_edit.text().strip() else ""
+        file_path, _ = QFileDialog.getOpenFileName(self, "选择CSV轨迹文件", start_dir, "CSV Files (*.csv);;All Files (*)")
+        if file_path:
+            self.csv_path_edit.setText(file_path)
+
+    def load_csv_trajectory(self):
+        if self.model is None:
+            QMessageBox.warning(self, "提示", "请先加载MuJoCo模型！")
+            return
+        path = self.csv_path_edit.text().strip()
+        if not path or not os.path.exists(path):
+            QMessageBox.warning(self, "提示", "请选择有效的CSV文件！")
+            return
+        try:
+            import numpy as _np
+            try:
+                data = _np.loadtxt(path, delimiter=",", dtype=float)
+            except Exception:
+                # Fallback allowing headers or mixed whitespace
+                data = _np.genfromtxt(path, delimiter=",", dtype=float)
+            if data.ndim == 1:
+                data = _np.atleast_2d(data)
+
+            N, D = data.shape
+            expected = self.controlled_joint_count
+            if D != expected:
+                QMessageBox.critical(self, "维度不匹配",
+                                     f"CSV列数为 {D}，但机器人可控关节为 {expected}。\n"
+                                     f"请提供每行包含{expected}个数值的轨迹。")
+                self._reset_trajectory_ui()
+                return
+
+            self.trajectory_data = data
+            self.current_frame = 0
+
+            # Update UI
+            self.traj_slider.blockSignals(True)
+            self.traj_slider.setRange(0, max(0, N-1))
+            self.traj_slider.setValue(0)
+            self.traj_slider.setEnabled(True)
+            self.traj_slider.blockSignals(False)
+            self.prev_frame_btn.setEnabled(True)
+            self.next_frame_btn.setEnabled(True)
+            self.traj_info_label.setText(f"已加载轨迹：帧数 {N}，维度 {D}")
+
+            # Apply first frame
+            self.apply_trajectory_frame(0)
+        except Exception as e:
+            QMessageBox.critical(self, "加载失败", f"读取CSV失败：{str(e)}")
+            self._reset_trajectory_ui()
+
+    def on_traj_slider_changed(self, value):
+        if self.trajectory_data is None:
+            return
+        self.current_frame = int(value)
+        self.apply_trajectory_frame(self.current_frame)
+
+    def prev_frame(self):
+        if self.trajectory_data is None:
+            return
+        new_idx = max(0, self.current_frame - 1)
+        if new_idx != self.current_frame:
+            self.current_frame = new_idx
+            self.traj_slider.blockSignals(True)
+            self.traj_slider.setValue(self.current_frame)
+            self.traj_slider.blockSignals(False)
+            self.apply_trajectory_frame(self.current_frame)
+
+    def next_frame(self):
+        if self.trajectory_data is None:
+            return
+        max_idx = self.trajectory_data.shape[0] - 1
+        new_idx = min(max_idx, self.current_frame + 1)
+        if new_idx != self.current_frame:
+            self.current_frame = new_idx
+            self.traj_slider.blockSignals(True)
+            self.traj_slider.setValue(self.current_frame)
+            self.traj_slider.blockSignals(False)
+            self.apply_trajectory_frame(self.current_frame)
+
+    def apply_trajectory_frame(self, index):
+        """Apply the CSV row at `index` to all controllable joints.
+        Keeps base pose unchanged if present."""
+        if self.model is None or self.data is None or self.trajectory_data is None:
+            return
+        if index < 0 or index >= self.trajectory_data.shape[0]:
+            return
+
+        row = self.trajectory_data[index]
+
+        # Update UI controls without emitting per-control signals
+        for ui_idx, control in enumerate(self.joint_controls):
+            if ui_idx < row.shape[0]:
+                control.set_value(float(row[ui_idx]))
+
+        # Schedule all joint updates atomically
+        with self._update_lock:
+            for ui_idx, control in enumerate(self.joint_controls):
+                joint_id = control.joint_id
+                value = float(row[ui_idx])
+                self._pending_joint_updates[joint_id] = value
+
+        # Apply updates immediately if viewer not running
+        self._apply_pending_updates()
+        # Status
+        if hasattr(self, 'traj_info_label'):
+            total = self.trajectory_data.shape[0]
+            self.traj_info_label.setText(f"帧 {index+1}/{total} 已应用；维度 {row.shape[0]}")
 
     def on_joint_value_changed(self, joint_id, value):
         """Callback when joint value changes"""
@@ -844,15 +1047,26 @@ COM Inertia Matrix (kg⋅m²):
         if self.is_viewer_running:
             return
 
-        self.is_viewer_running = True
-        self.viewer_thread = threading.Thread(target=self.viewer_loop, daemon=True)
-        self.viewer_thread.start()
+        if self._use_integrated_viewer():
+            # Use embedded Qt renderer
+            self.render_widget.set_model(self.model, self.data)
+            self.render_timer.start(16)  # ~60 FPS
+            self.is_viewer_running = True
+            self.start_viewer_btn.setEnabled(False)
+            self.stop_viewer_btn.setEnabled(True)
+            self.start_sim_btn.setEnabled(True)
+            self.status_label.setText("Integrated viewer running (Qt)")
+            self.status_label.setStyleSheet("padding: 10px; background-color: #e3f2fd; border-radius: 5px; color: #1565c0;")
+        else:
+            self.is_viewer_running = True
+            self.viewer_thread = threading.Thread(target=self.viewer_loop, daemon=True)
+            self.viewer_thread.start()
 
-        self.start_viewer_btn.setEnabled(False)
-        self.stop_viewer_btn.setEnabled(True)
-        self.start_sim_btn.setEnabled(True)
-        self.status_label.setText("Viewer running...")
-        self.status_label.setStyleSheet("padding: 10px; background-color: #e3f2fd; border-radius: 5px; color: #1565c0;")
+            self.start_viewer_btn.setEnabled(False)
+            self.stop_viewer_btn.setEnabled(True)
+            self.start_sim_btn.setEnabled(True)
+            self.status_label.setText("Viewer running...")
+            self.status_label.setStyleSheet("padding: 10px; background-color: #e3f2fd; border-radius: 5px; color: #1565c0;")
 
     def stop_viewer(self):
         """Stop viewer"""
@@ -860,22 +1074,47 @@ COM Inertia Matrix (kg⋅m²):
         if self.is_simulation_running:
             self.stop_simulation()
             
-        self.is_viewer_running = False
+        if self._use_integrated_viewer():
+            self.render_timer.stop()
+            self.is_viewer_running = False
 
-        if self.viewer is not None:
-            self.viewer.close()
-            self.viewer = None
+            self.start_viewer_btn.setEnabled(True)
+            self.stop_viewer_btn.setEnabled(False)
+            self.start_sim_btn.setEnabled(False)
+            self.stop_sim_btn.setEnabled(False)
+            self.status_label.setText("Integrated viewer stopped")
+            self.status_label.setStyleSheet("padding: 10px; background-color: #fff3e0; border-radius: 5px; color: #e65100;")
+        else:
+            self.is_viewer_running = False
 
-        if self.viewer_thread is not None:
-            self.viewer_thread.join(timeout=2.0)
-            self.viewer_thread = None
+            if self.viewer is not None:
+                self.viewer.close()
+                self.viewer = None
 
-        self.start_viewer_btn.setEnabled(True)
-        self.stop_viewer_btn.setEnabled(False)
-        self.start_sim_btn.setEnabled(False)
-        self.stop_sim_btn.setEnabled(False)
-        self.status_label.setText("Viewer stopped")
-        self.status_label.setStyleSheet("padding: 10px; background-color: #fff3e0; border-radius: 5px; color: #e65100;")
+            if self.viewer_thread is not None:
+                self.viewer_thread.join(timeout=2.0)
+                self.viewer_thread = None
+
+            self.start_viewer_btn.setEnabled(True)
+            self.stop_viewer_btn.setEnabled(False)
+            self.start_sim_btn.setEnabled(False)
+            self.stop_sim_btn.setEnabled(False)
+            self.status_label.setText("Viewer stopped")
+            self.status_label.setStyleSheet("padding: 10px; background-color: #fff3e0; border-radius: 5px; color: #e65100;")
+
+    def _render_tick(self):
+        """Tick function for integrated Qt viewer."""
+        if self.model is None or self.data is None:
+            return
+        # Apply pending joint updates
+        self._apply_pending_updates()
+        # Step simulation if enabled
+        if self.is_simulation_running:
+            self._apply_joint_holding_torques()
+            mujoco.mj_step(self.model, self.data)
+        # Request repaint
+        if self.render_widget is not None:
+            self.render_widget.update()
 
     def viewer_loop(self):
         """Viewer main loop"""

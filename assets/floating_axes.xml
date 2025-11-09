@@ -1,0 +1,25 @@
+<mujoco model="floating_axes">
+  <compiler angle="radian" coordinate="local"/>
+  <option timestep="0.002" gravity="0 0 -9.81"/>
+  
+
+  <worldbody>
+    <!-- Floating base providing 6 DoF -->
+    <body name="axes" pos="0 0 0">
+      <joint name="base_free" type="free"/>
+
+      <!-- Coordinate axis link composed of three cylinder bodies; only positive directions -->
+      <body name="x_axis" pos="0 0 0">
+        <geom name="x_cyl" type="cylinder" fromto="0 0 0 1 0 0" size="0.015" rgba="1 0 0 1" contype="0" conaffinity="0"/>
+      </body>
+
+      <body name="y_axis" pos="0 0 0">
+        <geom name="y_cyl" type="cylinder" fromto="0 0 0 0 1 0" size="0.015" rgba="0 1 0 1" contype="0" conaffinity="0"/>
+      </body>
+
+      <body name="z_axis" pos="0 0 0">
+        <geom name="z_cyl" type="cylinder" fromto="0 0 0 0 0 1" size="0.015" rgba="0 0 1 1" contype="0" conaffinity="0"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
