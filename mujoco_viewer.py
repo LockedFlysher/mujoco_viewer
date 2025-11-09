@@ -386,7 +386,7 @@ class MujocoViewer(QMainWindow):
         browse_btn.clicked.connect(self.browse_file)
         load_btn = QPushButton("Load Model")
         load_btn.clicked.connect(self.load_model)
-        load_btn.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; }")
+        load_btn.setProperty('variant', 'primary')
 
         file_input_layout.addWidget(self.file_path_edit)
         file_input_layout.addWidget(browse_btn)
@@ -419,6 +419,8 @@ class MujocoViewer(QMainWindow):
         self.stop_viewer_btn = QPushButton("Stop Viewer")
         self.stop_viewer_btn.clicked.connect(self.stop_viewer)
         self.stop_viewer_btn.setEnabled(False)
+        self.start_viewer_btn.setProperty('variant', 'info')
+        self.stop_viewer_btn.setProperty('variant', 'danger')
 
         self.reset_btn = QPushButton("Reset Pose")
         self.reset_btn.clicked.connect(self.reset_pose)
@@ -433,12 +435,12 @@ class MujocoViewer(QMainWindow):
         self.start_sim_btn = QPushButton("Start Simulation (Fixed Joints)")
         self.start_sim_btn.clicked.connect(self.start_simulation)
         self.start_sim_btn.setEnabled(False)
-        self.start_sim_btn.setStyleSheet("QPushButton { background-color: #2196F3; color: white; font-weight: bold; }")
+        self.start_sim_btn.setProperty('variant', 'info')
 
         self.stop_sim_btn = QPushButton("Stop Simulation")
         self.stop_sim_btn.clicked.connect(self.stop_simulation)
         self.stop_sim_btn.setEnabled(False)
-        self.stop_sim_btn.setStyleSheet("QPushButton { background-color: #f44336; color: white; font-weight: bold; }")
+        self.stop_sim_btn.setProperty('variant', 'danger')
 
         sim_row.addWidget(self.start_sim_btn)
         sim_row.addWidget(self.stop_sim_btn)
@@ -585,7 +587,7 @@ class MujocoViewer(QMainWindow):
         buttons.addWidget(self.calculate_pose_btn)
         self.clear_highlight_btn = QPushButton("Clear Highlights")
         self.clear_highlight_btn.clicked.connect(self._clear_all_highlights)
-        self.clear_highlight_btn.setStyleSheet("QPushButton { background-color: #ffeb3b; }")
+        self.clear_highlight_btn.setProperty('variant', 'warning')
         buttons.addWidget(self.clear_highlight_btn)
         pose_layout.addLayout(buttons, 4, 0, 1, 2)
 
@@ -610,11 +612,11 @@ class MujocoViewer(QMainWindow):
         btns = QHBoxLayout()
         self.calc_current_inertia_btn = QPushButton("Calculate Current Inertia")
         self.calc_current_inertia_btn.clicked.connect(self.calculate_current_inertia)
-        self.calc_current_inertia_btn.setStyleSheet("QPushButton { background-color: #2196F3; color: white; }")
+        self.calc_current_inertia_btn.setProperty('variant', 'info')
         btns.addWidget(self.calc_current_inertia_btn)
         self.calc_q0_inertia_btn = QPushButton("Calculate q0 Inertia")
         self.calc_q0_inertia_btn.clicked.connect(self.calculate_q0_inertia)
-        self.calc_q0_inertia_btn.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; }")
+        self.calc_q0_inertia_btn.setProperty('variant', 'primary')
         btns.addWidget(self.calc_q0_inertia_btn)
         inertia_layout.addLayout(btns)
 
@@ -640,8 +642,7 @@ class MujocoViewer(QMainWindow):
         status_group = QGroupBox("Status Information")
         status_layout = QVBoxLayout()
         self.status_label = QLabel("Ready")
-        self.status_label.setStyleSheet(
-            "padding: 10px; background-color: #e8f5e8; border-radius: 5px; color: #2e7d32;")
+        self.status_label.setProperty('status', 'success')
         status_layout.addWidget(self.status_label)
         status_group.setLayout(status_layout)
         info_layout.addWidget(status_group)
@@ -651,6 +652,14 @@ class MujocoViewer(QMainWindow):
     def _use_integrated_viewer(self):
         # On macOS, prefer integrated Qt rendering to avoid mjpython requirement
         return sys.platform == 'darwin'
+
+    def _set_status(self, text, role='info'):
+        """Unified status label styling via dynamic property."""
+        self.status_label.setText(text)
+        self.status_label.setProperty('status', role)
+        self.status_label.style().unpolish(self.status_label)
+        self.status_label.style().polish(self.status_label)
+        self.status_label.update()
 
     def _save_last_path(self, path):
         """Save the last successfully loaded path"""
@@ -740,15 +749,11 @@ class MujocoViewer(QMainWindow):
             self.start_sim_btn.setEnabled(True)
             self.reset_btn.setEnabled(True)
 
-            self.status_label.setText("Model loaded successfully (MuJoCo only)")
-            self.status_label.setStyleSheet(
-                "padding: 10px; background-color: #e8f5e8; border-radius: 5px; color: #2e7d32;")
+            self._set_status("Model loaded successfully (MuJoCo only)", 'success')
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load model: {str(e)}")
-            self.status_label.setText(f"Loading failed: {str(e)}")
-            self.status_label.setStyleSheet(
-                "padding: 10px; background-color: #ffebee; border-radius: 5px; color: #c62828;")
+            self._set_status(f"Loading failed: {str(e)}", 'danger')
 
     def update_model_info(self):
         """Update model information"""
@@ -1068,8 +1073,7 @@ COM Inertia Matrix (kg⋅m²):
             self.start_viewer_btn.setEnabled(False)
             self.stop_viewer_btn.setEnabled(True)
             self.start_sim_btn.setEnabled(True)
-            self.status_label.setText("Integrated viewer running (Qt)")
-            self.status_label.setStyleSheet("padding: 10px; background-color: #e3f2fd; border-radius: 5px; color: #1565c0;")
+            self._set_status("Integrated viewer running (Qt)", 'info')
         else:
             self.is_viewer_running = True
             self.viewer_thread = threading.Thread(target=self.viewer_loop, daemon=True)
@@ -1078,8 +1082,7 @@ COM Inertia Matrix (kg⋅m²):
             self.start_viewer_btn.setEnabled(False)
             self.stop_viewer_btn.setEnabled(True)
             self.start_sim_btn.setEnabled(True)
-            self.status_label.setText("Viewer running...")
-            self.status_label.setStyleSheet("padding: 10px; background-color: #e3f2fd; border-radius: 5px; color: #1565c0;")
+            self._set_status("Viewer running...", 'info')
 
     def stop_viewer(self):
         """Stop viewer"""
@@ -1095,8 +1098,7 @@ COM Inertia Matrix (kg⋅m²):
             self.stop_viewer_btn.setEnabled(False)
             self.start_sim_btn.setEnabled(False)
             self.stop_sim_btn.setEnabled(False)
-            self.status_label.setText("Integrated viewer stopped")
-            self.status_label.setStyleSheet("padding: 10px; background-color: #fff3e0; border-radius: 5px; color: #e65100;")
+            self._set_status("Integrated viewer stopped", 'warning')
         else:
             self.is_viewer_running = False
 
@@ -1112,8 +1114,7 @@ COM Inertia Matrix (kg⋅m²):
             self.stop_viewer_btn.setEnabled(False)
             self.start_sim_btn.setEnabled(False)
             self.stop_sim_btn.setEnabled(False)
-            self.status_label.setText("Viewer stopped")
-            self.status_label.setStyleSheet("padding: 10px; background-color: #fff3e0; border-radius: 5px; color: #e65100;")
+            self._set_status("Viewer stopped", 'warning')
 
     def _render_tick(self):
         """Tick function for integrated Qt viewer."""
@@ -1172,8 +1173,7 @@ COM Inertia Matrix (kg⋅m²):
         self.stop_viewer_btn.setEnabled(False)
         self.start_sim_btn.setEnabled(False)
         self.stop_sim_btn.setEnabled(False)
-        self.status_label.setText("Viewer closed")
-        self.status_label.setStyleSheet("padding: 10px; background-color: #f5f5f5; border-radius: 5px; color: #616161;")
+        self._set_status("Viewer closed", 'muted')
 
     def reset_pose(self):
         """Reset to initial pose"""
@@ -1211,8 +1211,7 @@ COM Inertia Matrix (kg⋅m²):
         # Forward kinematics calculation
         mujoco.mj_forward(self.model, self.data)
 
-        self.status_label.setText("Pose reset to 'home' keyframe")
-        self.status_label.setStyleSheet("padding: 10px; background-color: #e8f5e8; border-radius: 5px; color: #2e7d32;")
+        self._set_status("Pose reset to 'home' keyframe", 'success')
 
     def start_simulation(self):
         """Start simulation (fixed joints)"""
@@ -1231,8 +1230,7 @@ COM Inertia Matrix (kg⋅m²):
         self.start_sim_btn.setEnabled(False)
         self.stop_sim_btn.setEnabled(True)
         
-        self.status_label.setText("Simulation running (fixed joints), observing stability...")
-        self.status_label.setStyleSheet("padding: 10px; background-color: #e3f2fd; border-radius: 5px; color: #1565c0;")
+        self._set_status("Simulation running (fixed joints), observing stability...", 'info')
 
     def stop_simulation(self):
         """Stop simulation"""
@@ -1241,8 +1239,7 @@ COM Inertia Matrix (kg⋅m²):
         self.start_sim_btn.setEnabled(True)
         self.stop_sim_btn.setEnabled(False)
         
-        self.status_label.setText("Simulation stopped")
-        self.status_label.setStyleSheet("padding: 10px; background-color: #fff3e0; border-radius: 5px; color: #e65100;")
+        self._set_status("Simulation stopped", 'warning')
 
     def _save_joint_target_positions(self):
         """Save current joint positions as fixed targets"""
@@ -1943,6 +1940,43 @@ class ModernStyle:
                 color: #999999;
             }
 
+            /* Button variants */
+            QPushButton[variant="primary"] {
+                background-color: #4CAF50;
+                color: white;
+                border-color: #45a049;
+                font-weight: 600;
+            }
+            QPushButton[variant="primary"]:hover { background-color: #43a047; }
+            QPushButton[variant="primary"]:pressed { background-color: #388e3c; }
+
+            QPushButton[variant="info"] {
+                background-color: #2196F3;
+                color: white;
+                border-color: #1e88e5;
+                font-weight: 600;
+            }
+            QPushButton[variant="info"]:hover { background-color: #1e88e5; }
+            QPushButton[variant="info"]:pressed { background-color: #1976d2; }
+
+            QPushButton[variant="danger"] {
+                background-color: #f44336;
+                color: white;
+                border-color: #e53935;
+                font-weight: 600;
+            }
+            QPushButton[variant="danger"]:hover { background-color: #e53935; }
+            QPushButton[variant="danger"]:pressed { background-color: #d32f2f; }
+
+            QPushButton[variant="warning"] {
+                background-color: #ffeb3b;
+                color: #333333;
+                border-color: #fdd835;
+                font-weight: 600;
+            }
+            QPushButton[variant="warning"]:hover { background-color: #ffe035; }
+            QPushButton[variant="warning"]:pressed { background-color: #ffd600; }
+
             QLineEdit {
                 border: 1px solid #cccccc;
                 border-radius: 4px;
@@ -2046,6 +2080,43 @@ class ModernStyle:
             QComboBox QAbstractItemView::item:hover {
                 background-color: #e8f5e8;
             }
+
+            /* Tabs styling */
+            QTabWidget::pane {
+                border: 1px solid #cccccc;
+                border-radius: 4px;
+                background: #ffffff;
+            }
+            QTabBar::tab {
+                background: #fafafa;
+                border: 1px solid #cccccc;
+                padding: 6px 12px;
+                margin-right: 2px;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+            }
+            QTabBar::tab:selected {
+                background: #ffffff;
+                border-bottom-color: #ffffff;
+            }
+            QTabBar::tab:hover { background: #f0f0f0; }
+
+            /* Splitter */
+            QSplitter::handle {
+                background: #e0e0e0;
+            }
+
+            /* Status labels */
+            QLabel[status] {
+                padding: 10px;
+                border-radius: 5px;
+                font-weight: 500;
+            }
+            QLabel[status="success"] { background-color: #e8f5e8; color: #2e7d32; }
+            QLabel[status="info"] { background-color: #e3f2fd; color: #1565c0; }
+            QLabel[status="warning"] { background-color: #fff3e0; color: #e65100; }
+            QLabel[status="danger"] { background-color: #ffebee; color: #c62828; }
+            QLabel[status="muted"] { background-color: #f5f5f5; color: #616161; }
         """)
 
 def main():
