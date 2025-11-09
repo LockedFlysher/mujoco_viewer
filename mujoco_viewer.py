@@ -322,6 +322,7 @@ class MujocoViewer(QMainWindow):
         self.trajectory_data = None   # numpy array shape (N, D)
         self.current_frame = 0
         self.controlled_joint_count = 0
+        self.trajectory_includes_base = False
         
         # Store names in the model
         self.body_names = []
@@ -838,6 +839,7 @@ COM Inertia Matrix (kg⋅m²):
     def _reset_trajectory_ui(self):
         self.trajectory_data = None
         self.current_frame = 0
+        self.trajectory_includes_base = False
         if hasattr(self, 'traj_slider'):
             self.traj_slider.blockSignals(True)
             self.traj_slider.setRange(0, 0)
@@ -849,8 +851,11 @@ COM Inertia Matrix (kg⋅m²):
         if hasattr(self, 'next_frame_btn'):
             self.next_frame_btn.setEnabled(False)
         if hasattr(self, 'traj_info_label'):
-            expected = self.controlled_joint_count if self.model is not None else 0
-            self.traj_info_label.setText(f"未加载轨迹（期望维度: {expected}）")
+            expected_nonbase = self.controlled_joint_count if self.model is not None else 0
+            expected_text = str(expected_nonbase)
+            if self.free_joint_id != -1:
+                expected_text += f" 或 {expected_nonbase}+6(含基座XYZRPY)"
+            self.traj_info_label.setText(f"未加载轨迹（期望维度: {expected_text}）")
 
     def browse_csv(self):
         start_dir = os.path.dirname(self.csv_path_edit.text().strip()) if self.csv_path_edit.text().strip() else ""
@@ -877,16 +882,22 @@ COM Inertia Matrix (kg⋅m²):
                 data = _np.atleast_2d(data)
 
             N, D = data.shape
-            expected = self.controlled_joint_count
-            if D != expected:
+            expected_nonbase = self.controlled_joint_count
+            base_ok = (self.free_joint_id != -1)
+            ok_without_base = (D == expected_nonbase)
+            ok_with_base = (base_ok and D == expected_nonbase + 6)
+            if not (ok_without_base or ok_with_base):
+                expect_text = f"{expected_nonbase}"
+                if base_ok:
+                    expect_text += f" 或 {expected_nonbase}+6(含基座XYZRPY)"
                 QMessageBox.critical(self, "维度不匹配",
-                                     f"CSV列数为 {D}，但机器人可控关节为 {expected}。\n"
-                                     f"请提供每行包含{expected}个数值的轨迹。")
+                                     f"CSV列数为 {D}。期望列数：{expect_text}。")
                 self._reset_trajectory_ui()
                 return
 
             self.trajectory_data = data
             self.current_frame = 0
+            self.trajectory_includes_base = ok_with_base
 
             # Update UI
             self.traj_slider.blockSignals(True)
@@ -896,7 +907,8 @@ COM Inertia Matrix (kg⋅m²):
             self.traj_slider.blockSignals(False)
             self.prev_frame_btn.setEnabled(True)
             self.next_frame_btn.setEnabled(True)
-            self.traj_info_label.setText(f"已加载轨迹：帧数 {N}，维度 {D}")
+            base_text = "，含基座" if self.trajectory_includes_base else ""
+            self.traj_info_label.setText(f"已加载轨迹：帧数 {N}，维度 {D}{base_text}")
 
             # Apply first frame
             self.apply_trajectory_frame(0)
@@ -943,20 +955,42 @@ COM Inertia Matrix (kg⋅m²):
 
         row = self.trajectory_data[index]
 
-        # Update UI controls without emitting per-control signals
+        # Split row into base and joints if needed
+        joint_offset = 0
+        if self.trajectory_includes_base and self.free_joint_id != -1:
+            # Base: [x, y, z, roll, pitch, yaw]
+            pos = np.array(row[0:3], dtype=float)
+            rpy = np.array(row[3:6], dtype=float)
+
+            # Update base qpos directly
+            self.data.qpos[self.free_joint_qpos_addr:self.free_joint_qpos_addr + 3] = pos
+            quat = euler_to_quaternion(rpy)
+            self.data.qpos[self.free_joint_qpos_addr + 3:self.free_joint_qpos_addr + 7] = quat
+
+            # Update base UI controls to reflect
+            if hasattr(self, 'base_control_widget') and self.base_control_group.isVisible():
+                self.base_control_widget.set_values(pos, rpy)
+
+            joint_offset = 6
+
+        # Update UI controls for non-base joints without emitting signals
         for ui_idx, control in enumerate(self.joint_controls):
-            if ui_idx < row.shape[0]:
-                control.set_value(float(row[ui_idx]))
+            csv_idx = joint_offset + ui_idx
+            if csv_idx < row.shape[0]:
+                control.set_value(float(row[csv_idx]))
 
         # Schedule all joint updates atomically
         with self._update_lock:
             for ui_idx, control in enumerate(self.joint_controls):
-                joint_id = control.joint_id
-                value = float(row[ui_idx])
-                self._pending_joint_updates[joint_id] = value
+                csv_idx = joint_offset + ui_idx
+                if csv_idx < row.shape[0]:
+                    joint_id = control.joint_id
+                    value = float(row[csv_idx])
+                    self._pending_joint_updates[joint_id] = value
 
-        # Apply updates immediately if viewer not running
+        # Apply updates immediately if viewer not running or base changed
         self._apply_pending_updates()
+        mujoco.mj_forward(self.model, self.data)
         # Status
         if hasattr(self, 'traj_info_label'):
             total = self.trajectory_data.shape[0]
