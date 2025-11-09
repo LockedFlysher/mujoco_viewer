@@ -365,8 +365,8 @@ class MujocoViewer(QMainWindow):
         # Right info panel
         self.setupInfoPanel(splitter)
 
-        # Set splitter proportions
-        splitter.setSizes([800, 400])
+        # Set splitter proportions (prioritize right panel viewing area)
+        splitter.setSizes([450, 850])
 
     def setupControlPanel(self, parent):
         """Setup left control panel"""
@@ -519,37 +519,37 @@ class MujocoViewer(QMainWindow):
         parent.addWidget(control_widget)
 
     def setupInfoPanel(self, parent):
-        """Setup right info panel"""
+        """Setup right info panel with tabs + status"""
         info_widget = QWidget()
         info_layout = QVBoxLayout()
         info_widget.setLayout(info_layout)
 
-        # Embedded render view (Qt-based)
-        render_group = QGroupBox("Render View (内嵌)")
-        render_layout = QVBoxLayout()
+        # Tabs container
+        self.info_tabs = QTabWidget()
+
+        # --- Viewer Tab ---
+        viewer_tab = QWidget()
+        viewer_layout = QVBoxLayout()
         self.render_widget = MujocoWidget()
-        render_layout.addWidget(self.render_widget)
-        render_group.setLayout(render_layout)
-        info_layout.addWidget(render_group)
+        viewer_layout.addWidget(self.render_widget)
+        viewer_tab.setLayout(viewer_layout)
+        self.info_tabs.addTab(viewer_tab, "Viewer")
 
-        # Model information
-        model_info_group = QGroupBox("Model Information")
-        model_info_layout = QVBoxLayout()
-
+        # --- Model Info Tab ---
+        model_tab = QWidget()
+        model_layout = QVBoxLayout()
         self.model_info_label = QLabel("No model loaded")
         self.model_info_label.setWordWrap(True)
         self.model_info_label.setStyleSheet("padding: 10px; background-color: #f0f0f0; border-radius: 5px;")
+        model_layout.addWidget(self.model_info_label)
+        model_tab.setLayout(model_layout)
+        self.info_tabs.addTab(model_tab, "Model Info")
 
-        model_info_layout.addWidget(self.model_info_label)
-        model_info_group.setLayout(model_info_layout)
-        info_layout.addWidget(model_info_group)
-
-        # Relative pose calculation
-        pose_group = QGroupBox("Relative Pose Calculation")
+        # --- Relative Pose Tab ---
+        pose_tab = QWidget()
         pose_layout = QGridLayout()
         pose_layout.setColumnStretch(1, 1)
 
-        # --- Source selection ---
         pose_layout.addWidget(QLabel("Source Type:"), 0, 0)
         self.source_type_combo = QComboBox()
         self.source_type_combo.addItems(["Body", "Geom", "Joint"])
@@ -558,10 +558,9 @@ class MujocoViewer(QMainWindow):
         pose_layout.addWidget(QLabel("Source Name:"), 1, 0)
         self.source_name_combo = QComboBox()
         self.source_name_combo.setMinimumWidth(150)
-        self.source_name_combo.setMaxVisibleItems(10)  # Maximum 10 items displayed, scroll bar shown if exceeded
+        self.source_name_combo.setMaxVisibleItems(10)
         pose_layout.addWidget(self.source_name_combo, 1, 1)
-        
-        # --- Target selection ---
+
         pose_layout.addWidget(QLabel("Target Type:"), 2, 0)
         self.target_type_combo = QComboBox()
         self.target_type_combo.addItems(["Body", "Geom", "Joint"])
@@ -569,99 +568,79 @@ class MujocoViewer(QMainWindow):
 
         pose_layout.addWidget(QLabel("Target Name:"), 3, 0)
         self.target_name_combo = QComboBox()
-        self.target_name_combo.setMaxVisibleItems(10)  # Maximum 10 items displayed, scroll bar shown if exceeded
+        self.target_name_combo.setMaxVisibleItems(10)
         pose_layout.addWidget(self.target_name_combo, 3, 1)
 
-        # --- Connect signals ---
         self.source_type_combo.currentIndexChanged.connect(
-            lambda: self._on_selection_changed(self.source_type_combo, self.source_name_combo)
-        )
+            lambda: self._on_selection_changed(self.source_type_combo, self.source_name_combo))
         self.target_type_combo.currentIndexChanged.connect(
-            lambda: self._on_selection_changed(self.target_type_combo, self.target_name_combo)
-        )
-        
-        # Connect name selection change signals
+            lambda: self._on_selection_changed(self.target_type_combo, self.target_name_combo))
         self.source_name_combo.currentTextChanged.connect(self._update_highlights)
         self.target_name_combo.currentTextChanged.connect(self._update_highlights)
 
-        # Calculate and highlight buttons
-        button_layout = QHBoxLayout()
-        
+        buttons = QHBoxLayout()
         self.calculate_pose_btn = QPushButton("Calculate Relative Pose")
         self.calculate_pose_btn.clicked.connect(self.calculate_relative_pose)
-        button_layout.addWidget(self.calculate_pose_btn)
-        
+        buttons.addWidget(self.calculate_pose_btn)
         self.clear_highlight_btn = QPushButton("Clear Highlights")
         self.clear_highlight_btn.clicked.connect(self._clear_all_highlights)
         self.clear_highlight_btn.setStyleSheet("QPushButton { background-color: #ffeb3b; }")
-        button_layout.addWidget(self.clear_highlight_btn)
-        
-        pose_layout.addLayout(button_layout, 4, 0, 1, 2)
-        
-        # Mass and Inertia Analysis Section
-        inertia_group = QGroupBox("Mass and Inertia Analysis")
-        inertia_layout = QVBoxLayout()
-        
-        # Buttons for inertia calculation
-        inertia_btn_layout = QHBoxLayout()
-        
-        self.calc_current_inertia_btn = QPushButton("Calculate Current Inertia")
-        self.calc_current_inertia_btn.clicked.connect(self.calculate_current_inertia)
-        self.calc_current_inertia_btn.setStyleSheet("QPushButton { background-color: #2196F3; color: white; }")
-        inertia_btn_layout.addWidget(self.calc_current_inertia_btn)
-        
-        self.calc_q0_inertia_btn = QPushButton("Calculate q0 Inertia")
-        self.calc_q0_inertia_btn.clicked.connect(self.calculate_q0_inertia)
-        self.calc_q0_inertia_btn.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; }")
-        inertia_btn_layout.addWidget(self.calc_q0_inertia_btn)
-        
-        inertia_layout.addLayout(inertia_btn_layout)
-        
-        # Results display with scroll area
-        self.inertia_results_scroll = QScrollArea()
-        self.inertia_results_scroll.setWidgetResizable(True)
-        self.inertia_results_scroll.setMinimumHeight(200)
-        self.inertia_results_scroll.setMaximumHeight(400)
-        
-        self.inertia_results_label = QLabel("Load a model and click a button to calculate inertia properties")
-        self.inertia_results_label.setWordWrap(True)
-        self.inertia_results_label.setStyleSheet("padding: 10px; background-color: #f0f0f0; border-radius: 5px; font-family: monospace; font-size: 10px;")
-        self.inertia_results_label.setAlignment(Qt.AlignTop)
-        
-        self.inertia_results_scroll.setWidget(self.inertia_results_label)
-        inertia_layout.addWidget(self.inertia_results_scroll)
-        
-        inertia_group.setLayout(inertia_layout)
-        info_layout.addWidget(inertia_group)
+        buttons.addWidget(self.clear_highlight_btn)
+        pose_layout.addLayout(buttons, 4, 0, 1, 2)
 
-        # Highlight status indicator
         self.highlight_status_label = QLabel("Highlight Status: No objects selected")
-        self.highlight_status_label.setStyleSheet("""
-            QLabel { 
-                background-color: #e3f2fd; 
-                padding: 5px; 
-                border: 1px solid #90caf9;
-                border-radius: 3px;
-                font-size: 10px;
-            }
-        """)
+        self.highlight_status_label.setStyleSheet(
+            "QLabel { background-color: #e3f2fd; padding: 5px; border: 1px solid #90caf9; border-radius: 3px; font-size: 10px; }")
         pose_layout.addWidget(self.highlight_status_label, 5, 0, 1, 2)
 
         self.relative_pose_label = QLabel("Please load a model and select two objects first")
         self.relative_pose_label.setWordWrap(True)
-        self.relative_pose_label.setStyleSheet("padding: 10px; background-color: #f0f0f0; border-radius: 5px; min-height: 80px;")
+        self.relative_pose_label.setStyleSheet(
+            "padding: 10px; background-color: #f0f0f0; border-radius: 5px; min-height: 80px;")
         pose_layout.addWidget(self.relative_pose_label, 6, 0, 1, 2)
 
-        pose_group.setLayout(pose_layout)
-        info_layout.addWidget(pose_group)
+        pose_tab.setLayout(pose_layout)
+        self.info_tabs.addTab(pose_tab, "Relative Pose")
 
-        # Status information
+        # --- Inertia Tab ---
+        inertia_tab = QWidget()
+        inertia_layout = QVBoxLayout()
+
+        btns = QHBoxLayout()
+        self.calc_current_inertia_btn = QPushButton("Calculate Current Inertia")
+        self.calc_current_inertia_btn.clicked.connect(self.calculate_current_inertia)
+        self.calc_current_inertia_btn.setStyleSheet("QPushButton { background-color: #2196F3; color: white; }")
+        btns.addWidget(self.calc_current_inertia_btn)
+        self.calc_q0_inertia_btn = QPushButton("Calculate q0 Inertia")
+        self.calc_q0_inertia_btn.clicked.connect(self.calculate_q0_inertia)
+        self.calc_q0_inertia_btn.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; }")
+        btns.addWidget(self.calc_q0_inertia_btn)
+        inertia_layout.addLayout(btns)
+
+        self.inertia_results_scroll = QScrollArea()
+        self.inertia_results_scroll.setWidgetResizable(True)
+        self.inertia_results_scroll.setMinimumHeight(200)
+        self.inertia_results_scroll.setMaximumHeight(400)
+        self.inertia_results_label = QLabel(
+            "Load a model and click a button to calculate inertia properties")
+        self.inertia_results_label.setWordWrap(True)
+        self.inertia_results_label.setStyleSheet(
+            "padding: 10px; background-color: #f0f0f0; border-radius: 5px; font-family: monospace; font-size: 10px;")
+        self.inertia_results_label.setAlignment(Qt.AlignTop)
+        self.inertia_results_scroll.setWidget(self.inertia_results_label)
+        inertia_layout.addWidget(self.inertia_results_scroll)
+
+        inertia_tab.setLayout(inertia_layout)
+        self.info_tabs.addTab(inertia_tab, "Mass/Inertia")
+
+        info_layout.addWidget(self.info_tabs)
+
+        # Status information (always visible beneath tabs)
         status_group = QGroupBox("Status Information")
         status_layout = QVBoxLayout()
-
         self.status_label = QLabel("Ready")
-        self.status_label.setStyleSheet("padding: 10px; background-color: #e8f5e8; border-radius: 5px; color: #2e7d32;")
-
+        self.status_label.setStyleSheet(
+            "padding: 10px; background-color: #e8f5e8; border-radius: 5px; color: #2e7d32;")
         status_layout.addWidget(self.status_label)
         status_group.setLayout(status_layout)
         info_layout.addWidget(status_group)
